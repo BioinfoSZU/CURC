@@ -405,7 +405,7 @@ static inline void bsc_compress(const char *input, const char *output) {
     fs::path output_path(output);
     std::string bsc_command = std::string("./bsc") + " e "
                               + fs::absolute(input_path).c_str() + " "
-                              + fs::absolute(output_path).c_str() + " -pm0 -e2";
+                              + fs::absolute(output_path).c_str() + " -pm0 -e2 > /dev/null";
     int status = std::system(bsc_command.c_str());
     if (status != 0) throw std::runtime_error("Error occurred during bsc compress.");
 }

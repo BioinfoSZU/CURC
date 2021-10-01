@@ -122,7 +122,7 @@ std::string restorePg(const std::string& destPg, std::string& srcPg,
         ret.append(PgSAHelpers::reverseComplement(srcPg.substr(matchSrcPos, matchLength)));
     }
     ret.append(destPg, posDest, destPg.length() - posDest);
-    printf("Restored Pg sequence of length: %zu\n", ret.length());
+    // printf("Restored Pg sequence of length: %zu\n", ret.length());
     return ret;
 }
 
@@ -504,7 +504,6 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
                                              strand_id_stream, read_len, is_paired_end, working_path, o1, o2);
         }
     }
-    fs::remove_all(working_path);
 }
 
 void decompress(const Param& param) {
@@ -538,5 +537,8 @@ void decompress(const Param& param) {
         decompress_block(input, o1, o2, is_preserve_order, is_paired_end, read_len, working_path);
     }
 
-    fs::remove_all(param.working_parent_path);
+    int status = std::system(("rm -rf " + param.working_parent_path).c_str());
+    if (status != 0) {
+        printf("remove tmp directory fail\n");
+    }
 }

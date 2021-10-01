@@ -1003,7 +1003,7 @@ void block_compress(const uint64_t * reads_db_host,
             cudaFree(hash_key_array);
             cudaFree(aux);
 
-            auto start = std::chrono::steady_clock::now();
+            // auto start = std::chrono::steady_clock::now();
             for (int off = 1; off < param.max_off; ++off) {
                 thrust::for_each(thrust::device, suffix_reads_id, suffix_reads_id + suffix_reads_count,
                                  [=] __device__ (uint32_t suffix_read_id) {
@@ -1064,7 +1064,7 @@ void block_compress(const uint64_t * reads_db_host,
                 suffix_reads_count = thrust::remove_if(thrust::device, suffix_reads_id, suffix_reads_id + suffix_reads_count,
                                   [next] __device__ (uint32_t id) { return next[id] != INVALID; }) - suffix_reads_id;
             }
-            printf("first match use time %lf ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            // printf("first match use time %lf ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 
             cudaFree(value_array);
             cudaFree(suffix_reads_id);
@@ -1118,10 +1118,10 @@ void block_compress(const uint64_t * reads_db_host,
             thrust::copy_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count, suffix_reads_id,
                             [next] __device__ (uint32_t id) { return next[id] == INVALID; });
 
-            auto start = std::chrono::steady_clock::now();
+            // auto start = std::chrono::steady_clock::now();
             full_match_gpu<read_unit_size>(reads_db_device, prefix_reads_id, suffix_reads_id, suffix_reads_count,
                                            next, prev, offset, param, device_id);
-            printf("second match use time : %lf ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            // printf("second match use time : %lf ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
             cudaFree(prefix_reads_id);
             cudaFree(suffix_reads_id);
         }
@@ -1168,7 +1168,7 @@ void block_compress(const uint64_t * reads_db_host,
         read_mapper.template index_and_mapping<false>(Param::k2, Param::ref_index_step2, Param::bucket_limit, Param::read_index_step2, Param::target_mismatch_count2);
         read_mapper.template index_and_mapping<true>(Param::k2, Param::ref_index_step2, Param::bucket_limit, Param::read_index_step2, Param::target_mismatch_count2);
         read_mapper.get_result(unmatch_reads_id_host, unmapping_reads_count, unmapping_N_reads_id, unmapping_N_reads_count, map_record, map_mis_cnt);
-        printf("Mapping count : %zu\nunmapping_reads_count : %u\nunmapping_N_reads_count : %u\n", map_record.size(), unmapping_reads_count, unmapping_N_reads_count);
+        // printf("Mapping count : %zu\nunmapping_reads_count : %u\nunmapping_N_reads_count : %u\n", map_record.size(), unmapping_reads_count, unmapping_N_reads_count);
     }
     LOCK_END
     cudaHostUnregister(N_reads_db_host.data());
@@ -1586,7 +1586,7 @@ void block_compress(const uint64_t * reads_db_host,
         ref->ref_string.append(unmapping_ref->ref_string); unmapping_ref->ref_string.clear(); unmapping_ref->ref_string.shrink_to_fit();
         ref->ref_string.append(unmapping_N_ref->ref_string);  unmapping_N_ref->ref_string.clear(); unmapping_N_ref->ref_string.shrink_to_fit();
 
-        printf("Var-len encoding ... ");
+        // printf("Var-len encoding ... ");
         size_t compLen = 0;
         char* var_len_encode_seq = Compress(compLen, ref->ref_string.data(), ref->ref_string.size(),
                                             VARLEN_DNA_CODER, 3, PgSAHelpers::VarLenDNACoder::getCoderParam
@@ -1600,12 +1600,12 @@ void block_compress(const uint64_t * reads_db_host,
         ref->ref_string.clear();
         ref->ref_string.shrink_to_fit();
 
-        printf("Var-len encoded sequence compress ... ");
-        auto fast_lzma2_start = std::chrono::steady_clock::now();
+        // printf("Var-len encoded sequence compress ... ");
+        // auto fast_lzma2_start = std::chrono::steady_clock::now();
         lzma2::lzma2_compress((working_path / "ref_var_len_encode.bin").c_str(), (working_path / "ref.lzma2").c_str(), param.flzma2_level, param.flzma2_thread_num);
-        auto fast_lzma2_end = std::chrono::steady_clock::now();
-        printf("compressed use time : %lf ms ", std::chrono::duration<double,std::milli>(fast_lzma2_end - fast_lzma2_start).count());
-        printf("compressed file size : %zu bytes\n", fs::file_size(working_path / "ref.lzma2"));
+        // auto fast_lzma2_end = std::chrono::steady_clock::now();
+        // printf("compressed use time : %lf ms ", std::chrono::duration<double,std::milli>(fast_lzma2_end - fast_lzma2_start).count());
+        // printf("compressed file size : %zu bytes\n", fs::file_size(working_path / "ref.lzma2"));
     }
 
     auto read_file_and_output = [&](const fs::path &filename) {
@@ -1710,19 +1710,19 @@ void process(const Param& param) {
             cudaFree(contain_N_flags);
         };
 
-        indicators::show_console_cursor(false);
-        indicators::ProgressBar bar{
-                indicators::option::BarWidth{50},
-                indicators::option::Start{"["},
-                indicators::option::Fill{"■"},
-                indicators::option::Lead{"■"},
-                indicators::option::Remainder{"-"},
-                indicators::option::End{" ]"},
-                indicators::option::PrefixText{"Process Fastq "},
-                indicators::option::ForegroundColor{indicators::Color::cyan},
-                indicators::option::ShowElapsedTime{true},
-                indicators::option::FontStyles{std::vector<indicators::FontStyle>{indicators::FontStyle::bold}}
-        };
+//        indicators::show_console_cursor(false);
+//        indicators::ProgressBar bar{
+//                indicators::option::BarWidth{50},
+//                indicators::option::Start{"["},
+//                indicators::option::Fill{"■"},
+//                indicators::option::Lead{"■"},
+//                indicators::option::Remainder{"-"},
+//                indicators::option::End{" ]"},
+//                indicators::option::PrefixText{"Process Fastq "},
+//                indicators::option::ForegroundColor{indicators::Color::cyan},
+//                indicators::option::ShowElapsedTime{true},
+//                indicators::option::FontStyles{std::vector<indicators::FontStyle>{indicators::FontStyle::bold}}
+//        };
 
         mio::mmap_source io_buffer, io_buffer_2;
         const size_t io_buffer_size = 50 * 1000 * 1000; // 50MB
@@ -1739,7 +1739,7 @@ void process(const Param& param) {
         size_t total_read_bytes = 0, last_total_read_bytes = 0, last_reads_count = 0;
         uint32_t global_reads_id = 0;
 
-        auto process_fastq_start = std::chrono::steady_clock::now();
+        // auto process_fastq_start = std::chrono::steady_clock::now();
         while(total_read_bytes < fastq_bytes) {
             std::error_code error;
             if (!param.is_paired_end) {
@@ -1836,11 +1836,11 @@ void process(const Param& param) {
             if (reads_count * read_unit_size * sizeof(uint64_t) >= reads_db_host_capacity) {
                 throw std::runtime_error("reads_db_host overflow");
             }
-            auto process_fastq_time = std::chrono::duration<double>(std::chrono::steady_clock::now() - process_fastq_start).count();
-            double process_speed = (double) total_read_bytes / 1000000 / process_fastq_time;
-            if (param.is_paired_end) process_speed *= 2;
-            bar.set_option(indicators::option::PostfixText{"speed : " + std::to_string(process_speed) + " MB/s"});
-            bar.set_progress(100 * total_read_bytes / fastq_bytes);
+            // auto process_fastq_time = std::chrono::duration<double>(std::chrono::steady_clock::now() - process_fastq_start).count();
+            // double process_speed = (double) total_read_bytes / 1000000 / process_fastq_time;
+            // if (param.is_paired_end) process_speed *= 2;
+            // bar.set_option(indicators::option::PostfixText{"speed : " + std::to_string(process_speed) + " MB/s"});
+            // bar.set_progress(100 * total_read_bytes / fastq_bytes);
 
             size_t block_read_bytes = total_read_bytes - last_total_read_bytes;
             if (param.is_paired_end) block_read_bytes *= 2;
@@ -1873,7 +1873,7 @@ void process(const Param& param) {
             last_reads_count = reads_count;
         }
 
-        indicators::show_console_cursor(true);
+        // indicators::show_console_cursor(true);
         printf("reads count : %zu \n", reads_count);
         printf("block count : %u \n", blocks_count);
         cudaFreeHost(reads_db_buffer);
@@ -1903,7 +1903,11 @@ void process(const Param& param) {
 
     output_file.flush();
     printf("archive size : %zu bytes \n", fs::file_size(output_path));
-    fs::remove_all(param.working_parent_path);
+    // fs::remove_all(param.working_parent_path);
+    int status = std::system(("rm -rf " + param.working_parent_path).c_str());
+    if (status != 0) {
+        printf("remove tmp directory fail\n");
+    }
 }
 
 void compress(Param& param) {

@@ -2,12 +2,14 @@
 
 #include "byteswap.h"
 
-std::ostream *PgSAHelpers::logout = &std::cout;
+// std::ostream *PgSAHelpers::logout = &std::cout;
 
 int PgSAHelpers::numberOfThreads = 8;
 
 NullBuffer null_buffer;
 std::ostream null_stream(&null_buffer);
+
+std::ostream *PgSAHelpers::logout = &null_stream;
 
 // TIME
 

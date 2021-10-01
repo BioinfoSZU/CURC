@@ -122,7 +122,7 @@ public:
         }
 
         uint64_t hash_count = key_ranges[hash_size + 1];
-        printf("hash count : %zu \n", hash_count);
+        // printf("hash count : %zu \n", hash_count);
         pos_array.resize(hash_count + 2);
 
 #pragma omp parallel for
@@ -184,7 +184,7 @@ public:
             reverse_complement(destPg);
         }
 
-        printf("match result size: %zu\n", result.size());
+        // printf("match result size: %zu\n", result.size());
 
         // correct dest pos due to rev complement matching
 #pragma omp parallel for
@@ -215,7 +215,7 @@ public:
         PgSAHelpers::writeUIntByteFrugal(pgMapLenDest, target_match_len);
         __gnu_parallel::sort(result.begin(), result.end());
         result.erase(std::unique(result.begin(), result.end()), result.end());
-        printf("Unique exact matches: %zu\n", result.size());
+        // printf("Unique exact matches: %zu\n", result.size());
 
         char * dest_ptr = &destPg[0]; // destPg.data(); // gcc >= 7.5 才支持返回非const的data pointer
         uint64_t pos = 0, npos = 0, totalDestOverlap = 0, totalMatched = 0;
@@ -260,8 +260,8 @@ public:
         resPgMapLen = pgMapLenDest.str();
         pgMapLenDest.clear();
 
-        printf("Final size of Pg: %zu (remove: %s ; %zu chars in overlapped dest symbol)\n",
-               npos, getTotalMatchStat(totalMatched, destPgLength).c_str(), totalDestOverlap);
+//        printf("Final size of Pg: %zu (remove: %s ; %zu chars in overlapped dest symbol)\n",
+//               npos, getTotalMatchStat(totalMatched, destPgLength).c_str(), totalDestOverlap);
 
     }
 };

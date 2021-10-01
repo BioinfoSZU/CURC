@@ -1,4 +1,4 @@
-#include "../cxxopts.hpp"
+#include "../third_party/cxxopts/cxxopts.hpp"
 #include <bits/stdc++.h>
 #include <experimental/filesystem>
 using namespace std;
@@ -138,6 +138,12 @@ int main(int argc,char ** argv) {
                 f1_path = fs::path(root_dir) / (f + "_1.fastq");
                 f2_path = fs::path(root_dir) / (f + "_2.fastq");
             }
+            double block_ratio = 0;
+            if (program_name == "gpu") {
+                std::string block_ratio_str;
+                std::getline(db_file, block_ratio_str);
+                block_ratio = std::stod(block_ratio_str);
+            }
             std::string comp_cmd = comp_time_cmd;
             std::string decomp_cmd = decomp_time_cmd;
             size_t archive_size;
@@ -215,6 +221,39 @@ int main(int argc,char ** argv) {
                     std::system("rm archive.pgrc_out");
                 } else {
                     std::system("rm archive.pgrc_out_1 && rm archive.pgrc_out_2");
+                }
+            } else if (program_name == "gpu") {
+                decomp_cmd += program_path + " -d -i archive.curc -o archive > " + decomp_output_path.c_str();
+                comp_cmd += program_path + " -c -i " + f1_path.string();
+                if (mode == "pe") comp_cmd += "," + f2_path.string() + " ";
+                if (preserve_order) comp_cmd += " --preserve_order ";
+                if (block_ratio == 0) {
+                    printf("block ratio is empty\n");
+                    std::exit(0);
+                }
+                comp_cmd += " --block_ratio " + std::to_string(block_ratio);
+                comp_cmd += " -o archive > " + comp_output_path.string();
+
+                printf("%s\n", comp_cmd.c_str());
+                status = std::system(comp_cmd.c_str());
+                if (status != 0) {
+                    printf("gpu compress error\n");
+                    // std::exit(0);
+                }
+                archive_size = fs::file_size("archive.curc");
+
+                printf("%s\n", decomp_cmd.c_str());
+                status = std::system(decomp_cmd.c_str());
+                if (status != 0) {
+                    printf("gpu decompress error\n");
+                    // std::exit(0);
+                }
+
+                std::system("rm archive.curc");
+                if (mode == "se") {
+                    std::system("rm archive.seq");
+                } else {
+                    std::system("rm archive_1.seq && rm archive_2.seq");
                 }
             }
             std::ifstream comp_time_log("comp_time.log");
