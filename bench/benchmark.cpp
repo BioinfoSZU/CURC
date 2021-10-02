@@ -37,6 +37,7 @@ int main(int argc,char ** argv) {
             ("program_name", "spring/pgrc/gpu", cxxopts::value<std::string>())
             ("program_path", "", cxxopts::value<std::string>())
             ("thread_num", "thread number in compression", cxxopts::value<int>())
+            ("gpu_ids", "gpu device id list", cxxopts::value<std::vector<int>>())
             ("h,help", "print usage");
     try {
         auto result = options.parse(argc, argv);
@@ -98,6 +99,19 @@ int main(int argc,char ** argv) {
         auto max_thread_num = std::thread::hardware_concurrency();
         if (thread_num == 0 || thread_num > max_thread_num) thread_num = (int) max_thread_num;
 
+        std::vector<int> device_ids;
+        if (program_name == "gpu") {
+            if (!result.count("gpu_ids")) {
+                printf("gpu must provide gpu device id list\n");
+                std::exit(0);
+            }
+            device_ids = result["gpu_ids"].as<std::vector<int>>();
+            if (device_ids.empty()) {
+                printf("parse device_ids error\n");
+                std::exit(0);
+            }
+        }
+
         std::string output_file_name = program_name;
         if (enable_compress_all) {
             output_file_name += "_fastq";
@@ -144,7 +158,16 @@ int main(int argc,char ** argv) {
                 std::getline(db_file, block_ratio_str);
                 block_ratio = std::stod(block_ratio_str);
             }
-            std::string comp_cmd = comp_time_cmd;
+            std::string comp_cmd;
+            if (program_name == "gpu") {
+                comp_cmd = "CUDA_VISIBLE_DEVICES=" + std::to_string(device_ids[0]);
+                for (size_t i = 1; i < device_ids.size(); ++i) {
+                    comp_cmd += "," + std::to_string(device_ids[i]);
+                }
+                comp_cmd += " " + comp_time_cmd;
+            } else {
+                comp_cmd = comp_time_cmd;
+            }
             std::string decomp_cmd = decomp_time_cmd;
             size_t archive_size;
 
