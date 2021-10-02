@@ -1940,12 +1940,12 @@ void compress(Param& param) {
     param.max_mismatch_count = param.read_len / 6;
 
     switch(read_unit_size) {
-//        case 1: // <= 32 bases
-//            process<1>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 2: // <= 64 bases
-//            process<2>(opt, read_len, reads_data_ratio);
-//            break;
+        case 1: // <= 32 bases
+            process<1>(param);
+            break;
+        case 2: // <= 64 bases
+            process<2>(param);
+            break;
         case 3: // <= 96 bases
             process<3>(param);
             break;
@@ -1955,15 +1955,15 @@ void compress(Param& param) {
         case 5: // <= 160 bases
             process<5>(param);
             break;
-//        case 6: // <= 192 bases
-//            process<6>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 7: // <= 224 bases
-//            process<7>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 8: // <= 256 bases
-//            process<8>(opt, read_len, reads_data_ratio);
-//            break;
+        case 6: // <= 192 bases
+            process<6>(param);
+            break;
+        case 7: // <= 224 bases
+            process<7>(param);
+            break;
+        case 8: // <= 256 bases
+            process<8>(param);
+            break;
 //        case 9: // <= 288 bases
 //            process<9>(opt, read_len, reads_data_ratio);
 //            break;
