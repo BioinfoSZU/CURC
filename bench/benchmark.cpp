@@ -265,7 +265,7 @@ int main(int argc,char ** argv) {
 
             csv << f << " " << archive_size << " "
                 << get_second(comp_time) << " " << comp_memory << " " << comp_cpu_usage << " "
-                << get_second(decomp_time) << " " << decomp_memory << " " << decomp_cpu_usage << " \n";
+                << get_second(decomp_time) << " " << decomp_memory << " " << decomp_cpu_usage << " \n" << std::flush;
         }
 
     } catch (cxxopts::OptionException& e) {
