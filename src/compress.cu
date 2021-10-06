@@ -4,7 +4,6 @@
 #include <thrust/system/cuda/execution_policy.h>
 #include <thrust/system/omp/execution_policy.h>
 #include <mio/mio.hpp>
-#include <indicators/indicators.hpp>
 #include "compress.cuh"
 #include "constant.hpp"
 #include "util.cuh"
@@ -182,6 +181,10 @@ struct RefRecord {
         std::uninitialized_fill(binary_ref_string, binary_ref_string + binary_ref_size, 0);
     }
 
+    void reset_binary_ref() {
+        std::uninitialized_fill(binary_ref_string, binary_ref_string + binary_ref_size, 0);
+    }
+
     void compute_binary_ref() {
         if (binary_ref_string == nullptr) {
             printf("ERROR: binary ref is null\n");
@@ -201,7 +204,7 @@ struct RefRecord {
         }
     }
 
-    void clear_binary_ref() {
+    void erase_binary_ref() {
         if (binary_ref_string != nullptr) {
             cudaFreeHost(binary_ref_string);
             binary_ref_size = 0;
@@ -217,7 +220,7 @@ struct RefRecord {
     }
 
     ~RefRecord() {
-        clear_binary_ref();
+        erase_binary_ref();
     }
 };
 
@@ -532,6 +535,392 @@ public:
         cudaMemcpy(map_mis_cnt.data(), last_mismatch_count, map_record_size * sizeof(uint8_t), cudaMemcpyDeviceToHost);
         cudaFree(matches);
         cudaFree(last_mismatch_count);
+    }
+};
+
+template <size_t K>
+__device__ __forceinline__ std::uint32_t maRushPrime1HashBinary(const uint64_t * binary_ref, size_t base_start) {
+    char kmer_str[K];
+#pragma unroll
+    for (size_t i = 0; i < K; ++i) {
+        kmer_str[i] = extract_base_unaligned_gpu(binary_ref, base_start + i);
+    }
+    std::uint64_t hash = K;
+    char * kmer = kmer_str;
+    for (std::uint32_t j = 0; j < K/4; ) {
+        std::uint32_t k;
+        memcpy(&k, kmer, 4);
+        k += j++;
+        hash ^= k;
+        hash *= 171717;
+        kmer += 4;
+    }
+    return (std::uint32_t)(hash);
+}
+
+template <size_t K>
+__device__ __forceinline__ std::uint32_t maRushPrime1HashChar(const char *str) {
+    std::uint64_t hash = K;
+    for (std::uint32_t j = 0; j < K/4; ) {
+        std::uint32_t k;
+        memcpy(&k, str, 4);
+        k += j++;
+        hash ^= k;
+        hash *= 171717;
+        str += 4;
+    }
+    return (std::uint32_t)(hash);
+}
+
+struct RefMatcher {
+    struct MatchResult {
+        uint64_t posSrc;
+        uint64_t length;
+        uint64_t posDest;
+
+        __device__ MatchResult(): posSrc(0), length(0), posDest(0) {}
+
+        __device__ MatchResult(uint64_t posSrc, uint64_t length, uint64_t posDest) : posSrc(posSrc), length(length), posDest(posDest) {}
+
+        __device__ bool operator==(const MatchResult &rhs) const {
+            return posSrc == rhs.posSrc &&
+                   length == rhs.length &&
+                   posDest == rhs.posDest;
+        }
+
+        __device__ bool operator!=(const MatchResult &rhs) const {
+            return !(rhs == *this);
+        }
+
+        __device__ bool operator<(const MatchResult &rhs) const {
+            if (posDest < rhs.posDest)
+                return true;
+            if (rhs.posDest < posDest)
+                return false;
+            if (posSrc < rhs.posSrc)
+                return true;
+            if (rhs.posSrc < posSrc)
+                return false;
+            return length < rhs.length;
+        }
+    };
+
+    static void reverse_complement(std::string& seq) {
+        size_t L = seq.size();
+#pragma omp parallel for
+        for (size_t i = 0; i < L / 2; ++i) {
+            char a = PgSAHelpers::reverseComplement(seq[i]);
+            char b = PgSAHelpers::reverseComplement(seq[L - i - 1]);
+            seq[i] = b;
+            seq[L - i - 1] = a;
+        }
+        if (L % 2) seq[L / 2] = PgSAHelpers::reverseComplement(seq[L / 2]);
+    }
+
+    static string getTotalMatchStat(uint64_t totalMatchLength, uint64_t destPgLength) {
+        return PgSAHelpers::toString(totalMatchLength) + " (" + PgSAHelpers::toString((totalMatchLength * 100.0) / destPgLength, 1) + "%)";
+    }
+
+    static constexpr size_t src_step = 5;
+    static constexpr size_t dest_step = 3;
+    static constexpr size_t kmer_size = 36;
+    static constexpr size_t target_match_len = 50;
+    static constexpr size_t bucket_size_limit = 12;
+    static constexpr double match_result_ratio = 0.15;
+
+private:
+    size_t ref_len;
+    int device_id;
+    const Param& param;
+
+    uint64_t * ref;
+    uint32_t * key_ranges;
+    uint32_t * pos_array;
+    uint32_t hash_size_minus_one;
+
+public:
+    RefMatcher(size_t ref_len, int device_id, const Param& param): ref_len(ref_len), device_id(device_id), param(param) {}
+
+    void init(const uint64_t * binary_ref, size_t binary_ref_size) {
+        cudaSetDevice(device_id);
+        size_t index_count = (ref_len - kmer_size + 1 + src_step - 1) / src_step;
+        if (index_count > (1ULL << 30ULL)) { // ref_len require <= 5.3 Gbp, this is generally true under the block compression strategy
+            printf("RefMatcher hash_size is limit to 4GB\n");
+            std::exit(-1);
+        }
+        auto hash_size = get_hash_size(index_count);
+        hash_size_minus_one = hash_size - 1;
+        gpuErrorCheck(cudaMalloc((void**) &ref, binary_ref_size * sizeof(uint64_t)));
+        cudaMemcpy(ref, binary_ref, binary_ref_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
+
+        uint8_t * counts;
+        gpuErrorCheck(cudaMalloc((void**) &counts, hash_size + 2));
+        thrust::uninitialized_fill(thrust::device, counts, counts + hash_size + 2, 0);
+        thrust::for_each(thrust::device,
+                         thrust::counting_iterator<size_t>(0),
+                         thrust::counting_iterator<size_t>(index_count),
+                         [ref = ref, hash_size_minus_one = hash_size_minus_one, counts]
+                                 __device__ (size_t i) {
+                             uint64_t pos = i * src_step;
+                             uint32_t hash_pos = maRushPrime1HashBinary<kmer_size>(ref, pos) & hash_size_minus_one;
+                             if (counts[hash_pos] < bucket_size_limit) ++counts[hash_pos];
+                         });
+
+        gpuErrorCheck(cudaMalloc((void**) &key_ranges, (hash_size + 2) * sizeof(uint32_t)));
+        thrust::exclusive_scan(thrust::device, counts, counts + hash_size + 2, key_ranges, 0);
+
+        uint32_t hash_count;
+        cudaMemcpy(&hash_count, key_ranges + hash_size + 1, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+        gpuErrorCheck(cudaMalloc((void**) &pos_array, (hash_count + 2) * sizeof(uint32_t)));
+
+        thrust::for_each(thrust::device,
+                         thrust::counting_iterator<size_t>(0),
+                         thrust::counting_iterator<size_t>(index_count),
+                         [ref=ref, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one = hash_size_minus_one, counts]
+                                 __device__ (size_t i) {
+                             uint64_t pos = i * src_step;
+                             uint32_t hash_pos = maRushPrime1HashBinary<kmer_size>(ref, pos) & hash_size_minus_one;
+                             if (counts[hash_pos]) {
+                                 pos_array[key_ranges[hash_pos] + (--counts[hash_pos])] = i;
+                             }
+                         });
+
+        cudaFree(counts);
+    }
+
+    void match_binary_dest(const uint64_t * dest, size_t dest_len,
+                           MatchResult * matches, unsigned long long * matches_size_atomic,
+                           size_t dest_index_count, bool dest_is_ref) {
+        cudaSetDevice(device_id);
+        constexpr size_t dest_segement_step = 4;
+        size_t dest_segement_count = (dest_index_count + dest_segement_step - 1) / dest_segement_step;
+        thrust::for_each(thrust::device,
+                         thrust::counting_iterator<size_t>(0),
+                         thrust::counting_iterator<size_t>(dest_segement_count /*dest_index_count*/),
+                [dest, matches, matches_size_atomic, dest_len, dest_is_ref,
+                 ref=ref, ref_len=ref_len, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one=hash_size_minus_one]
+                __device__(size_t i) {
+                    for (size_t s = 0; s < dest_segement_step; ++s) {
+                        uint64_t dest_pos = (i * dest_segement_step + s) * dest_step;
+                        uint32_t hash_pos = maRushPrime1HashBinary<kmer_size>(dest, dest_pos) & hash_size_minus_one;
+                        uint64_t begin = key_ranges[hash_pos], end = key_ranges[hash_pos + 1];
+                        if (begin != end) {
+                            for (size_t j = begin; j < end; ++j) {
+                                uint64_t src_pos = pos_array[j] * src_step;
+                                if (dest_is_ref && (dest_len - src_pos < dest_pos)) continue;
+
+                                uint64_t dest_curr = dest_pos;
+                                uint64_t src_curr = src_pos;
+                                uint64_t p1 = dest_curr + kmer_size - 1;
+                                uint64_t p2 = src_curr + kmer_size - 1;
+                                while (++p1 != dest_len &&
+                                       ++p2 != ref_len &&
+                                       extract_base_unaligned_gpu(dest, p1) == extract_base_unaligned_gpu(ref, p2));
+
+                                uint64_t right = p1;
+                                p1 = dest_curr;
+                                p2 = src_curr;
+                                while (p1 != 0 &&
+                                       p2 != 0 &&
+                                       extract_base_unaligned_gpu(dest, --p1) == extract_base_unaligned_gpu(ref, --p2));
+
+                                if (right - p1 > target_match_len) {
+                                    if (extract_word_unaligned_gpu(dest, dest_curr, 32) !=
+                                        extract_word_unaligned_gpu(ref, src_curr, 32))
+                                        continue;
+                                    dest_curr += 32;
+                                    src_curr += 32;
+                                    int compare_len = kmer_size - 32;
+                                    while (compare_len && extract_base_unaligned_gpu(dest, dest_curr++) ==
+                                                          extract_base_unaligned_gpu(ref, src_curr++)) {
+                                        compare_len--;
+                                    }
+                                    if (compare_len == 0) {
+                                        unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1);
+                                        /// assert(matches_idx < match_result_capacity)
+                                        /// ignore the range check, thrust::system::error may be throwed in some extreme cases
+                                        matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
+                                        goto finish;
+                                        // break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    finish:;
+        });
+    }
+
+    void match_char_dest(const char * dest, size_t dest_len, MatchResult * matches, unsigned long long * matches_size_atomic, size_t dest_index_count) {
+        cudaSetDevice(device_id);
+        thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(dest_index_count),
+                         [dest, matches, matches_size_atomic, dest_len,
+                          ref=ref, ref_len=ref_len, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one=hash_size_minus_one]
+                          __device__(size_t i) {
+                             uint64_t dest_pos = i * dest_step;
+                             uint32_t hash_pos = maRushPrime1HashChar<kmer_size>(dest + dest_pos) & hash_size_minus_one;
+                             uint64_t begin = key_ranges[hash_pos], end = key_ranges[hash_pos + 1];
+                             if (begin != end) {
+                                 for (size_t j = begin; j < end; ++j) {
+                                     uint64_t src_pos = pos_array[j] * src_step;
+
+                                     uint64_t dest_curr = dest_pos;
+                                     uint64_t src_curr = src_pos;
+                                     uint64_t p1 = dest_curr + kmer_size - 1;
+                                     uint64_t p2 = src_curr + kmer_size - 1;
+                                     while(++p1 != dest_len &&
+                                           ++p2 != ref_len &&
+                                           dest[p1] == extract_base_unaligned_gpu(ref, p2)) ;
+
+                                     uint64_t right = p1;
+                                     p1 = dest_curr;
+                                     p2 = src_curr;
+                                     while (p1 != 0 &&
+                                            p2 != 0 &&
+                                            dest[--p1] == extract_base_unaligned_gpu(ref, --p2));
+
+                                     if (right - p1 > target_match_len) {
+                                         int compare_len = kmer_size;
+                                         while(compare_len && dest[dest_curr++] == extract_base_unaligned_gpu(ref, src_curr++)) {
+                                             compare_len--;
+                                         }
+                                         if (compare_len == 0) {
+                                             unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1);
+                                             /// assert(matches_idx < match_result_capacity)
+                                             /// ignore the range check, thrust::system::error may be throwed in some extreme cases
+                                             matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
+                                             break;
+                                         }
+                                     }
+                                 }
+                             }
+                         });
+    }
+
+    template<size_t read_unit_size>
+    void match(RefRecord<read_unit_size> * dest_ref, std::string& resPgMapOff, std::string& resPgMapLen, bool dest_contain_N, bool dest_is_ref) {
+        cudaSetDevice(device_id);
+        auto dest_ref_size = dest_ref->ref_string.size();
+        MatchResult * matches, * matches_host;
+        unsigned long long matches_size;
+        unsigned long long * matches_size_atomic;
+        size_t dest_index_count = (dest_ref->ref_string.size() - kmer_size + 1 + dest_step - 1) / dest_step ;
+        size_t match_result_capacity = dest_index_count * match_result_ratio;
+        printf("match result capacity : %zu \n", match_result_capacity);
+        gpuErrorCheck(cudaMalloc((void**) &matches, match_result_capacity * sizeof(MatchResult)));
+        cudaMalloc((void**) &matches_size_atomic, sizeof(unsigned long long));
+        cudaMemset(matches_size_atomic, 0, sizeof(unsigned long long));
+
+        reverse_complement(dest_ref->ref_string);
+        if (!dest_contain_N) {
+            if (dest_ref->binary_ref_string == nullptr) {
+                dest_ref->allocate_binary_ref();
+            } else {
+                dest_ref->reset_binary_ref();
+            }
+            dest_ref->compute_binary_ref();
+            uint64_t * dest;
+            gpuErrorCheck(cudaMalloc((void**) &dest, dest_ref->binary_ref_size * sizeof(uint64_t)));
+            cudaMemcpy(dest, dest_ref->binary_ref_string, dest_ref->binary_ref_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
+            match_binary_dest(dest, dest_ref->ref_string.size(), matches, matches_size_atomic, dest_index_count, dest_is_ref);
+            cudaFree(dest);
+            dest_ref->erase_binary_ref();
+        } else {
+            char * dest;
+            gpuErrorCheck(cudaMalloc((void**) &dest, dest_ref->ref_string.size()));
+            cudaMemcpy(dest, dest_ref->ref_string.data(), dest_ref->ref_string.size(), cudaMemcpyHostToDevice);
+            match_char_dest(dest, dest_ref->ref_string.size(), matches, matches_size_atomic, dest_index_count);
+            cudaFree(dest);
+        }
+
+        cudaMemcpy(&matches_size, matches_size_atomic, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        printf("matches result size : %llu\n", matches_size);
+        thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(matches_size),
+                         [matches, dest_len=dest_ref->ref_string.size()] __device__(size_t i) {
+                             matches[i].posDest = dest_len - (matches[i].posDest + matches[i].length);
+                         });
+        if (dest_is_ref) {
+            thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(matches_size),
+            [matches] __device__ (size_t i) {
+                if (matches[i].posSrc > matches[i].posDest) {
+                    uint64_t tmp = matches[i].posSrc;
+                    matches[i].posSrc = matches[i].posDest;
+                    matches[i].posDest = tmp;
+                }
+                uint64_t endPosSrc = (matches[i].posSrc + matches[i].length);
+                if (endPosSrc > matches[i].posDest) {
+                    uint64_t margin = (endPosSrc - matches[i].posDest + 1) / 2;
+                    matches[i].length -= margin;
+                    matches[i].posDest += margin;
+                }
+            });
+        }
+
+        thrust::sort(thrust::device, matches, matches + matches_size);
+        matches_size = thrust::unique(thrust::device, matches, matches + matches_size) - matches;
+        printf("Unique exact matches: %llu\n", matches_size);
+        cudaMallocHost((void**) &matches_host, matches_size * sizeof(MatchResult));
+        cudaMemcpy(matches_host, matches, matches_size * sizeof(MatchResult), cudaMemcpyDeviceToHost);
+        cudaFree(matches);
+        cudaFree(matches_size_atomic);
+        reverse_complement(dest_ref->ref_string);
+
+        std::ostringstream pgMapOffDest;
+        std::ostringstream pgMapLenDest;
+        PgSAHelpers::writeUIntByteFrugal(pgMapLenDest, target_match_len);
+
+        char * dest_ptr = &dest_ref->ref_string[0]; // destPg.data(); // gcc >= 7.5 才支持返回非const的data pointer
+        uint64_t pos = 0, npos = 0, totalDestOverlap = 0, totalMatched = 0;
+        bool is_ref_len_std = ref_len <= UINT32_MAX;
+        for (size_t i = 0; i < matches_size; ++i) {
+            auto & match = matches_host[i];
+            if (match.posDest < pos) {
+                uint64_t overflow = pos - match.posDest;
+                if (overflow >= match.length) {
+                    totalDestOverlap += match.length;
+                    match.length = 0;
+                    continue;
+                }
+                totalDestOverlap += overflow;
+                match.length -= overflow;
+                match.posDest += overflow;
+            }
+            if (match.length < target_match_len) {
+                totalDestOverlap += match.length;
+                continue;
+            }
+            totalMatched += match.length;
+            uint64_t length = match.posDest - pos;
+            std::memmove(dest_ptr + npos, dest_ptr + pos, length);
+            npos += length;
+            dest_ref->ref_string[npos++] = '%'; // mark
+            if (is_ref_len_std) {
+                PgSAHelpers::writeValue<uint32_t>(pgMapOffDest, match.posSrc);
+            } else {
+                PgSAHelpers::writeValue<uint64_t>(pgMapOffDest, match.posSrc);
+            }
+            PgSAHelpers::writeUIntByteFrugal(pgMapLenDest, match.length - target_match_len);
+            pos = match.posDest + match.length;
+        }
+        uint64_t length = dest_ref->ref_string.size() - pos;
+        std::memmove(dest_ptr + npos, dest_ptr + pos, length);
+        npos += length;
+        dest_ref->ref_string.resize(npos);
+
+        cudaFreeHost(matches_host);
+        resPgMapOff = pgMapOffDest.str();
+        pgMapOffDest.clear();
+        resPgMapLen = pgMapLenDest.str();
+        pgMapLenDest.clear();
+        printf("Final size of Pg: %zu (remove: %s ; %zu chars in overlapped dest symbol)\n",
+               npos, getTotalMatchStat(totalMatched, dest_ref_size).c_str(), totalDestOverlap);
+    }
+
+    void finish_match() {
+        cudaSetDevice(device_id);
+        cudaFree(ref);
+        cudaFree(key_ranges);
+        cudaFree(pos_array);
     }
 };
 
@@ -1003,7 +1392,6 @@ void block_compress(const uint64_t * reads_db_host,
             cudaFree(hash_key_array);
             cudaFree(aux);
 
-            // auto start = std::chrono::steady_clock::now();
             for (int off = 1; off < param.max_off; ++off) {
                 thrust::for_each(thrust::device, suffix_reads_id, suffix_reads_id + suffix_reads_count,
                                  [=] __device__ (uint32_t suffix_read_id) {
@@ -1064,7 +1452,6 @@ void block_compress(const uint64_t * reads_db_host,
                 suffix_reads_count = thrust::remove_if(thrust::device, suffix_reads_id, suffix_reads_id + suffix_reads_count,
                                   [next] __device__ (uint32_t id) { return next[id] != INVALID; }) - suffix_reads_id;
             }
-            // printf("first match use time %lf ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 
             cudaFree(value_array);
             cudaFree(suffix_reads_id);
@@ -1118,10 +1505,8 @@ void block_compress(const uint64_t * reads_db_host,
             thrust::copy_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count, suffix_reads_id,
                             [next] __device__ (uint32_t id) { return next[id] == INVALID; });
 
-            // auto start = std::chrono::steady_clock::now();
             full_match_gpu<read_unit_size>(reads_db_device, prefix_reads_id, suffix_reads_id, suffix_reads_count,
                                            next, prev, offset, param, device_id);
-            // printf("second match use time : %lf ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
             cudaFree(prefix_reads_id);
             cudaFree(suffix_reads_id);
         }
@@ -1148,7 +1533,6 @@ void block_compress(const uint64_t * reads_db_host,
     ref->assembly(reads_db_host, ref_reads_id_host, ref_reads_count, next_host, prev_host, offset_host, reads_count, param.read_len);
     ref->allocate_binary_ref();
     ref->compute_binary_ref();
-    // ref->print("ref");
     cudaFreeHost(next_host);
     cudaFreeHost(prev_host);
     cudaFreeHost(offset_host);
@@ -1168,7 +1552,6 @@ void block_compress(const uint64_t * reads_db_host,
         read_mapper.template index_and_mapping<false>(Param::k2, Param::ref_index_step2, Param::bucket_limit, Param::read_index_step2, Param::target_mismatch_count2);
         read_mapper.template index_and_mapping<true>(Param::k2, Param::ref_index_step2, Param::bucket_limit, Param::read_index_step2, Param::target_mismatch_count2);
         read_mapper.get_result(unmatch_reads_id_host, unmapping_reads_count, unmapping_N_reads_id, unmapping_N_reads_count, map_record, map_mis_cnt);
-        // printf("Mapping count : %zu\nunmapping_reads_count : %u\nunmapping_N_reads_count : %u\n", map_record.size(), unmapping_reads_count, unmapping_N_reads_count);
     }
     LOCK_END
     cudaHostUnregister(N_reads_db_host.data());
@@ -1235,7 +1618,6 @@ void block_compress(const uint64_t * reads_db_host,
         std::vector<uint32_t> unmapping_ref_reads_id(unmapping_reads_count);
         std::iota(unmapping_ref_reads_id.begin(), unmapping_ref_reads_id.end(), 0);
         unmapping_ref->assembly(reads_db_buffer, unmapping_ref_reads_id.data(), unmapping_reads_count, next_host, prev_host, offset_host, unmapping_reads_count, param.read_len);
-        // unmapping_ref->print("unmapping_ref");
         cudaFreeHost(reads_db_buffer);
         cudaFreeHost(next_host);
         cudaFreeHost(prev_host);
@@ -1252,7 +1634,6 @@ void block_compress(const uint64_t * reads_db_host,
     auto unmapping_N_ref_construct = std::async(std::launch::async, [&] {
         if (unmapping_N_reads_count == 0) return ;
         full_match_cpu<read_unit_size>(N_reads_db_host.data(), unmapping_N_reads_id, unmapping_N_reads_count, N_reads_id.size(), param, unmapping_N_ref.get());
-        // unmapping_N_ref->print("unmapping_N_ref");
         cudaFreeHost(unmapping_N_reads_id);
     });
 
@@ -1288,7 +1669,6 @@ void block_compress(const uint64_t * reads_db_host,
         size_t mismatch_base_context[256][256] = {0};
         std::string mismatch_base_context_stream;
         std::string mismatch_base_stream;
-        // std::ofstream strand_id_stream(working_path / "strand_id.txt");
         std::string strand_id_stream;
         std::vector<uint16_t> reads_off_stream;
         std::vector<std::vector<uint16_t>> mismatch_offset_stream(param.max_mismatch_count + 1);
@@ -1546,47 +1926,65 @@ void block_compress(const uint64_t * reads_db_host,
     });
 
     {
-        uint8_t isPgLengthStd = ref->ref_string.size() <= UINT32_MAX;
-        output_file.write(reinterpret_cast<const char*>(&isPgLengthStd), sizeof(uint8_t));
+        uint8_t isRefLengthStd = ref->ref_string.size() <= UINT32_MAX;
+        output_file.write(reinterpret_cast<const char*>(&isRefLengthStd), sizeof(uint8_t));
 
-        PgMatcher matcher(ref->ref_string);
-        std::string lqPgMapOff, lqPgMapLen;
-        if (!unmapping_ref->ref_string.empty()) {
-            matcher.markAndRemoveExactMatches(false, unmapping_ref->ref_string, lqPgMapOff, lqPgMapLen);
-        }
-        std::string nPgMapOff, nPgMapLen;
-        if (!unmapping_N_ref->ref_string.empty()) {
-            matcher.markAndRemoveExactMatches(false, unmapping_N_ref->ref_string, nPgMapOff, nPgMapLen);
-        }
-        std::string hqPgMapOff, hqPgMapLen;
-        matcher.markAndRemoveExactMatches(true, ref->ref_string, hqPgMapOff, hqPgMapLen);
+//        PgMatcher matcher(ref->ref_string);
+//        std::string lqPgMapOff, lqPgMapLen;
+//        if (!unmapping_ref->ref_string.empty()) {
+//            matcher.markAndRemoveExactMatches(false, unmapping_ref->ref_string, lqPgMapOff, lqPgMapLen);
+//        }
+//        std::string nPgMapOff, nPgMapLen;
+//        if (!unmapping_N_ref->ref_string.empty()) {
+//            matcher.markAndRemoveExactMatches(false, unmapping_N_ref->ref_string, nPgMapOff, nPgMapLen);
+//        }
+//        std::string hqPgMapOff, hqPgMapLen;
+//        matcher.markAndRemoveExactMatches(true, ref->ref_string, hqPgMapOff, hqPgMapLen);
 
-        double estimated_pg_offset_ratio = simpleUintCompressionEstimate(ref->ref_string.size(), isPgLengthStd ? UINT32_MAX : UINT64_MAX);
-        const int pg_offset_data_period_code = isPgLengthStd ? PGRC_DATAPERIODCODE_32_t : PGRC_DATAPERIODCODE_64_t;
+        std::string unmapRefMapOff, unmapRefMapLen;
+        std::string unmapNRefMapOff, unmapNRefMapLen;
+        std::string refMapOff, refMapLen;
+        LOCK_START
+        {
+            cudaSetDevice(device_id);
+            RefMatcher matcher(ref->ref_string.size(), device_id, param);
+            matcher.init(ref->binary_ref_string, ref->binary_ref_size);
+            if (!unmapping_ref->ref_string.empty()) {
+                matcher.template match(unmapping_ref.get(), unmapRefMapOff, unmapRefMapLen, false, false);
+            }
+            if (!unmapping_N_ref->ref_string.empty()) {
+                matcher.template match(unmapping_N_ref.get(), unmapNRefMapOff, unmapNRefMapLen, true, false);
+            }
+            matcher.template match(ref.get(), refMapOff, refMapLen, false, true);
+            matcher.finish_match();
+        }
+        LOCK_END
+
+        double estimated_ref_offset_ratio = simpleUintCompressionEstimate(ref->ref_string.size(), isRefLengthStd ? UINT32_MAX : UINT64_MAX);
+        const int ref_offset_data_period_code = isRefLengthStd ? 2 : 3;
         auto create_map_file = [&]
                 (const std::string &map_off, const std::string &map_len, const std::string &name) {
             std::ofstream map_off_lzma(working_path / (name + "_off.map.lzma"));
             std::ofstream map_len_lzma(working_path / (name + "_len.map.lzma"));
-            writeCompressed(map_off_lzma, map_off.data(), map_off.size(), LZMA_CODER, 3, pg_offset_data_period_code, estimated_pg_offset_ratio);
-            writeCompressed(map_len_lzma, map_len.data(), map_len.size(), LZMA_CODER, 3, PGRC_DATAPERIODCODE_8_t, 1);
+            writeCompressed(map_off_lzma, map_off.data(), map_off.size(), LZMA_CODER, 3, ref_offset_data_period_code, estimated_ref_offset_ratio);
+            writeCompressed(map_len_lzma, map_len.data(), map_len.size(), LZMA_CODER, 3, 0, 1);
         };
-        create_map_file(hqPgMapOff, hqPgMapLen, "hq");
-        create_map_file(lqPgMapOff, lqPgMapLen, "lq");
-        create_map_file(nPgMapOff, nPgMapLen, "n");
+        create_map_file(refMapOff, refMapLen, "ref");
+        create_map_file(unmapRefMapOff, unmapRefMapLen, "unmap_ref");
+        create_map_file(unmapNRefMapOff, unmapNRefMapLen,   "unmap_n_ref");
     }
 
     {
-        uint64_t HQ_ref_string_size = ref->ref_string.size();
-        uint64_t LQ_ref_string_size = unmapping_ref->ref_string.size();
-        uint64_t N_ref_string_size = unmapping_N_ref->ref_string.size();
-        output_file.write(reinterpret_cast<const char*>(&HQ_ref_string_size), sizeof(uint64_t));
-        output_file.write(reinterpret_cast<const char*>(&LQ_ref_string_size), sizeof(uint64_t));
-        output_file.write(reinterpret_cast<const char*>(&N_ref_string_size), sizeof(uint64_t));
+        uint64_t ref_size = ref->ref_string.size();
+        uint64_t unmapping_ref_size = unmapping_ref->ref_string.size();
+        uint64_t unmapping_N_ref_size = unmapping_N_ref->ref_string.size();
+        output_file.write(reinterpret_cast<const char*>(&ref_size), sizeof(uint64_t));
+        output_file.write(reinterpret_cast<const char*>(&unmapping_ref_size), sizeof(uint64_t));
+        output_file.write(reinterpret_cast<const char*>(&unmapping_N_ref_size), sizeof(uint64_t));
 
         ref->ref_string.append(unmapping_ref->ref_string); unmapping_ref->ref_string.clear(); unmapping_ref->ref_string.shrink_to_fit();
         ref->ref_string.append(unmapping_N_ref->ref_string);  unmapping_N_ref->ref_string.clear(); unmapping_N_ref->ref_string.shrink_to_fit();
 
-        // printf("Var-len encoding ... ");
         size_t compLen = 0;
         char* var_len_encode_seq = Compress(compLen, ref->ref_string.data(), ref->ref_string.size(),
                                             VARLEN_DNA_CODER, 3, PgSAHelpers::VarLenDNACoder::getCoderParam
@@ -1600,12 +1998,7 @@ void block_compress(const uint64_t * reads_db_host,
         ref->ref_string.clear();
         ref->ref_string.shrink_to_fit();
 
-        // printf("Var-len encoded sequence compress ... ");
-        // auto fast_lzma2_start = std::chrono::steady_clock::now();
         lzma2::lzma2_compress((working_path / "ref_var_len_encode.bin").c_str(), (working_path / "ref.lzma2").c_str(), param.flzma2_level, param.flzma2_thread_num);
-        // auto fast_lzma2_end = std::chrono::steady_clock::now();
-        // printf("compressed use time : %lf ms ", std::chrono::duration<double,std::milli>(fast_lzma2_end - fast_lzma2_start).count());
-        // printf("compressed file size : %zu bytes\n", fs::file_size(working_path / "ref.lzma2"));
     }
 
     auto read_file_and_output = [&](const fs::path &filename) {
@@ -1630,12 +2023,12 @@ void block_compress(const uint64_t * reads_db_host,
             read_file_and_output(working_path / "pe_flag.bsc");
         }
     }
-    read_file_and_output(working_path / "hq_off.map.lzma");
-    read_file_and_output(working_path / "hq_len.map.lzma");
-    read_file_and_output(working_path / "lq_off.map.lzma");
-    read_file_and_output(working_path / "lq_len.map.lzma");
-    read_file_and_output(working_path / "n_off.map.lzma");
-    read_file_and_output(working_path / "n_len.map.lzma");
+    read_file_and_output(working_path / "ref_off.map.lzma");
+    read_file_and_output(working_path / "ref_len.map.lzma");
+    read_file_and_output(working_path / "unmap_ref_off.map.lzma");
+    read_file_and_output(working_path / "unmap_ref_len.map.lzma");
+    read_file_and_output(working_path / "unmap_n_ref_off.map.lzma");
+    read_file_and_output(working_path / "unmap_n_ref_len.map.lzma");
     read_file_and_output(working_path / "mismatch_count.lzma");
     read_file_and_output(working_path / "mismatch_base.lzma");
     output_file.write(reinterpret_cast<const char*>(&param.max_mismatch_count), sizeof(uint8_t));
@@ -1710,20 +2103,6 @@ void process(const Param& param) {
             cudaFree(contain_N_flags);
         };
 
-//        indicators::show_console_cursor(false);
-//        indicators::ProgressBar bar{
-//                indicators::option::BarWidth{50},
-//                indicators::option::Start{"["},
-//                indicators::option::Fill{"■"},
-//                indicators::option::Lead{"■"},
-//                indicators::option::Remainder{"-"},
-//                indicators::option::End{" ]"},
-//                indicators::option::PrefixText{"Process Fastq "},
-//                indicators::option::ForegroundColor{indicators::Color::cyan},
-//                indicators::option::ShowElapsedTime{true},
-//                indicators::option::FontStyles{std::vector<indicators::FontStyle>{indicators::FontStyle::bold}}
-//        };
-
         mio::mmap_source io_buffer, io_buffer_2;
         const size_t io_buffer_size = 50 * 1000 * 1000; // 50MB
         const size_t io_buffer_reads_size = io_buffer_size / 2;
@@ -1739,7 +2118,6 @@ void process(const Param& param) {
         size_t total_read_bytes = 0, last_total_read_bytes = 0, last_reads_count = 0;
         uint32_t global_reads_id = 0;
 
-        // auto process_fastq_start = std::chrono::steady_clock::now();
         while(total_read_bytes < fastq_bytes) {
             std::error_code error;
             if (!param.is_paired_end) {
@@ -1836,11 +2214,6 @@ void process(const Param& param) {
             if (reads_count * read_unit_size * sizeof(uint64_t) >= reads_db_host_capacity) {
                 throw std::runtime_error("reads_db_host overflow");
             }
-            // auto process_fastq_time = std::chrono::duration<double>(std::chrono::steady_clock::now() - process_fastq_start).count();
-            // double process_speed = (double) total_read_bytes / 1000000 / process_fastq_time;
-            // if (param.is_paired_end) process_speed *= 2;
-            // bar.set_option(indicators::option::PostfixText{"speed : " + std::to_string(process_speed) + " MB/s"});
-            // bar.set_progress(100 * total_read_bytes / fastq_bytes);
 
             size_t block_read_bytes = total_read_bytes - last_total_read_bytes;
             if (param.is_paired_end) block_read_bytes *= 2;
@@ -1873,7 +2246,6 @@ void process(const Param& param) {
             last_reads_count = reads_count;
         }
 
-        // indicators::show_console_cursor(true);
         printf("reads count : %zu \n", reads_count);
         printf("block count : %u \n", blocks_count);
         cudaFreeHost(reads_db_buffer);
@@ -1892,9 +2264,6 @@ void process(const Param& param) {
         block_compress_future[b_id].get();
         std::vector<char> block_compressed_data;
         read_vector_from_binary_file(block_compressed_data, fs::path(param.working_dir) / (std::to_string(b_id) + block_archive_name_suffix));
-        // uint64_t block_compressed_size = block_compressed_data.size();
-        // output_file.write(reinterpret_cast<const char*>(&block_compressed_size), sizeof(uint64_t));
-        // output_file.write(block_compressed_data.data(), block_compressed_size);
         PgSAHelpers::writeArray(output_file, block_compressed_data.data(), block_compressed_data.size());
         fs::remove(fs::path(param.working_dir) / (std::to_string(b_id) + block_archive_name_suffix));
         printf("block %zu compress finish, compressed size : %zu\n", b_id, block_compressed_data.size());
@@ -1903,7 +2272,6 @@ void process(const Param& param) {
 
     output_file.flush();
     printf("archive size : %zu bytes \n", fs::file_size(output_path));
-    // fs::remove_all(param.working_parent_path);
     int status = std::system(("rm -rf " + param.working_parent_path).c_str());
     if (status != 0) {
         printf("remove tmp directory fail\n");

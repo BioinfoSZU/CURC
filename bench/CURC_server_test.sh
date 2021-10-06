@@ -1,0 +1,4 @@
+./bench --root_dir /home3/xiesh/data/ --mode se --program_name gpu --program_path ./curc --thread_num 40 --gpu_ids 0 --se_db_path ../bench/se_gpu_db.txt --pe_db_path ../bench/pe_gpu_db.txt
+./bench --root_dir /home3/xiesh/data/ --mode se --program_name gpu --program_path ./curc --thread_num 40 --gpu_ids 0 --se_db_path ../bench/se_gpu_db.txt --pe_db_path ../bench/pe_gpu_db.txt --preserve_order
+./bench --root_dir /home3/xiesh/data/ --mode pe --program_name gpu --program_path ./curc --thread_num 40 --gpu_ids 0 --se_db_path ../bench/se_gpu_db.txt --pe_db_path ../bench/pe_gpu_db.txt
+./bench --root_dir /home3/xiesh/data/ --mode pe --program_name gpu --program_path ./curc --thread_num 40 --gpu_ids 0 --se_db_path ../bench/se_gpu_db.txt --pe_db_path ../bench/pe_gpu_db.txt --preserve_order

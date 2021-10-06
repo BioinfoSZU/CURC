@@ -13,14 +13,14 @@
 namespace fs = std::experimental::filesystem;
 
 template<typename T>
-std::vector<T> lzma_decompress_to_vector(const fs::path& path) {
+std::vector<T> decompress_to_vector(const fs::path& path) {
     std::ifstream in(path);
     std::vector<T> ret;
     readCompressed(in, ret);
     return ret;
 }
 
-std::string lzma_decompress_to_string(const fs::path& path) {
+std::string decompress_to_string(const fs::path& path) {
     std::ifstream in(path);
     std::string ret;
     readCompressed(in, ret);
@@ -41,102 +41,8 @@ std::string extract_reference(const fs::path& working_path, const fs::path& path
     return ref_stream;
 }
 
-std::string bsc_decompress(const fs::path& path) {
-    std::string filename = path.stem().string();
-    fs::path output_path(path.parent_path() / (filename + ".txt"));
-    std::string bsc_command = std::string("./bsc") + " d "
-                              + fs::absolute(path).c_str() + " "
-                              + fs::absolute(output_path).c_str() + " "
-                              + " > /dev/null";
-    int status = std::system(bsc_command.c_str());
-    if (status != 0) throw std::runtime_error("Error occurred during bsc decompress.");
-
-    auto size = fs::file_size(output_path);
-    std::string ret;
-    ret.resize(size);
-    std::ifstream output(output_path);
-    output.read(ret.data(), size);
-    return ret;
-}
-
-template<size_t max_read_len>
-std::vector<uint16_t> mismatch_offset_decompress(const fs::path& path, size_t mismatch_count, size_t output_size) {
-    std::vector<uint16_t> ret;
-    ret.resize(output_size);
-
-    std::vector<char> compressed_data(fs::file_size(path));
-    std::ifstream input(path);
-    input.read(compressed_data.data(), compressed_data.size());
-
-    RangeCoder rc;
-    rc.input(compressed_data.data());
-    rc.StartDecode();
-
-    SIMPLE_MODEL<2> flag;
-    SIMPLE_MODEL<max_read_len / 2 + 1> first_value;
-    SIMPLE_MODEL<max_read_len> value;
-
-    size_t i = 0;
-    while (i < ret.size()) {
-        ret[i++] = flag.decodeSymbol(&rc);
-        ret[i++] = first_value.decodeSymbol(&rc);
-        if (mismatch_count > 1) {
-            if (mismatch_count == 2) {
-                ret[i++] = value.decodeSymbol(&rc);
-            } else {
-                ret[i++] = value.decodeSymbol(&rc);
-                int j = mismatch_count - 1;
-                while (j--) {
-                    ret[i++] = value.decodeSymbol(&rc);
-                }
-            }
-        }
-    }
-
-    rc.FinishDecode();
-    return ret;
-}
-
-std::string restorePg(const std::string& destPg, std::string& srcPg,
-                      std::istream& pgMapOffSrc, std::istream& pgMapLenSrc,
-                      bool isPgLengthStd, bool srcIsDest) {
-    std::string str;
-    std::string & ret = srcIsDest ? srcPg : str;
-    uint32_t target_match_len;
-    PgSAHelpers::readUIntByteFrugal(pgMapLenSrc, target_match_len);
-    uint64_t markPos = 0, posDest = 0;
-    while((markPos = destPg.find('%', posDest)) != std::string::npos) {
-        ret.append(destPg, posDest, markPos - posDest);
-        posDest = markPos + 1;
-        uint64_t matchSrcPos = 0;
-        if (isPgLengthStd) {
-            uint32_t tmp;
-            PgSAHelpers::readValue<uint32_t>(pgMapOffSrc, tmp, false);
-            matchSrcPos = tmp;
-        } else {
-            PgSAHelpers::readValue<uint64_t>(pgMapOffSrc, matchSrcPos, false);
-        }
-        uint64_t matchLength = 0;
-        PgSAHelpers::readUIntByteFrugal(pgMapLenSrc, matchLength);
-        matchLength += target_match_len;
-        ret.append(PgSAHelpers::reverseComplement(srcPg.substr(matchSrcPos, matchLength)));
-    }
-    ret.append(destPg, posDest, destPg.length() - posDest);
-    // printf("Restored Pg sequence of length: %zu\n", ret.length());
-    return ret;
-}
-
 template<typename T>
-void preserve_order_process(
-        uint8_t max_mismatch_count, char mismatch_decoder_table[128][4],
-        const std::string& hqPgSeq, const std::string& lqPgSeq, const std::string& nPgSeq,
-        const std::string& mismatch_base_stream,
-        const std::vector<uint8_t> & mismatch_count_stream,
-        const std::vector<std::vector<uint16_t>> & mismatch_off_stream,
-        const std::string& strand_id_stream,
-        uint16_t read_len, bool is_paired_end, const fs::path& working_path,
-        std::ofstream & o1, std::ofstream & o2) {
-    std::vector<T> id_to_pos;
+void extract_id_to_pos(std::vector<T>& id_to_pos, const fs::path& working_path, bool is_paired_end) {
     if (!is_paired_end) {
         lzma2::lzma2_decompress((working_path / "id_pos.comp").c_str(), (working_path / "id_pos.bin").c_str());
         {
@@ -247,6 +153,102 @@ void preserve_order_process(
         for (size_t i = 0; i < pairsCount; ++i) id_to_pos[i * 2] = id_to_pos[pairsCount + i];
         for (size_t i = 0; i < pairsCount; ++i) id_to_pos[i * 2 + 1] = right_part[i];
     }
+}
+
+std::string bsc_decompress(const fs::path& path) {
+    std::string filename = path.stem().string();
+    fs::path output_path(path.parent_path() / (filename + ".txt"));
+    std::string bsc_command = std::string("./bsc") + " d "
+                              + fs::absolute(path).c_str() + " "
+                              + fs::absolute(output_path).c_str() + " "
+                              + " > /dev/null";
+    int status = std::system(bsc_command.c_str());
+    if (status != 0) throw std::runtime_error("Error occurred during bsc decompress.");
+
+    auto size = fs::file_size(output_path);
+    std::string ret;
+    ret.resize(size);
+    std::ifstream output(output_path);
+    output.read(ret.data(), size);
+    return ret;
+}
+
+template<size_t max_read_len>
+std::vector<uint16_t> mismatch_offset_decompress(const fs::path& path, size_t mismatch_count, size_t output_size) {
+    std::vector<uint16_t> ret;
+    ret.resize(output_size);
+
+    std::vector<char> compressed_data(fs::file_size(path));
+    std::ifstream input(path);
+    input.read(compressed_data.data(), compressed_data.size());
+
+    RangeCoder rc;
+    rc.input(compressed_data.data());
+    rc.StartDecode();
+
+    SIMPLE_MODEL<2> flag;
+    SIMPLE_MODEL<max_read_len / 2 + 1> first_value;
+    SIMPLE_MODEL<max_read_len> value;
+
+    size_t i = 0;
+    while (i < ret.size()) {
+        ret[i++] = flag.decodeSymbol(&rc);
+        ret[i++] = first_value.decodeSymbol(&rc);
+        if (mismatch_count > 1) {
+            if (mismatch_count == 2) {
+                ret[i++] = value.decodeSymbol(&rc);
+            } else {
+                ret[i++] = value.decodeSymbol(&rc);
+                int j = mismatch_count - 1;
+                while (j--) {
+                    ret[i++] = value.decodeSymbol(&rc);
+                }
+            }
+        }
+    }
+
+    rc.FinishDecode();
+    return ret;
+}
+
+std::string recoverRef(const std::string& destRef, std::string& srcRef,
+                      std::istream& MapOffSrc, std::istream& MapLenSrc,
+                      bool isRefLengthStd, bool srcIsDest) {
+    std::string str;
+    std::string & ret = srcIsDest ? srcRef : str;
+    uint32_t target_match_len;
+    PgSAHelpers::readUIntByteFrugal(MapLenSrc, target_match_len);
+    uint64_t markPos = 0, posDest = 0;
+    while((markPos = destRef.find('%', posDest)) != std::string::npos) {
+        ret.append(destRef, posDest, markPos - posDest);
+        posDest = markPos + 1;
+        uint64_t matchSrcPos = 0;
+        if (isRefLengthStd) {
+            uint32_t tmp;
+            PgSAHelpers::readValue<uint32_t>(MapOffSrc, tmp, false);
+            matchSrcPos = tmp;
+        } else {
+            PgSAHelpers::readValue<uint64_t>(MapOffSrc, matchSrcPos, false);
+        }
+        uint64_t matchLength = 0;
+        PgSAHelpers::readUIntByteFrugal(MapLenSrc, matchLength);
+        matchLength += target_match_len;
+        ret.append(PgSAHelpers::reverseComplement(srcRef.substr(matchSrcPos, matchLength)));
+    }
+    ret.append(destRef, posDest, destRef.length() - posDest);
+    return ret;
+}
+
+template<typename T>
+void preserve_order_process(
+        char mismatch_decoder_table[128][4],
+        const std::string& hqPgSeq, const std::string& lqPgSeq, const std::string& nPgSeq,
+        const std::string& mismatch_base_stream,
+        const std::vector<uint8_t> & mismatch_count_stream,
+        const std::vector<std::vector<uint16_t>> & mismatch_off_stream,
+        const std::string& strand_id_stream, const std::vector<T>& id_to_pos,
+        uint16_t read_len, bool is_paired_end, const fs::path& working_path,
+        std::ofstream & o1, std::ofstream & o2) {
     std::vector<size_t> mismatch_off_cur(129, 0);
     size_t mismatch_base_cur = 0;
     size_t mismatch_cnt_cur = 0;
@@ -300,18 +302,16 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
     input.read(mismatch_decoder_table['T'], 4);
     input.read(mismatch_decoder_table['C'], 4);
     input.read(mismatch_decoder_table['G'], 4);
-    uint8_t isJoinPgLengthStd;
+    uint8_t isJoinRefLengthStd;
     if (is_preserve_order) {
-        input.read(reinterpret_cast<char*>(&isJoinPgLengthStd), sizeof(uint8_t));
+        input.read(reinterpret_cast<char*>(&isJoinRefLengthStd), sizeof(uint8_t));
     }
-    uint8_t isPgLengthStd;
-    input.read(reinterpret_cast<char*>(&isPgLengthStd), sizeof(uint8_t));
-    printf("isPgLengthStd : %u\n", isPgLengthStd);
-    uint64_t HQ_ref_size, LQ_ref_size, N_ref_size;
-    input.read(reinterpret_cast<char*>(&HQ_ref_size), sizeof(uint64_t));
-    input.read(reinterpret_cast<char*>(&LQ_ref_size), sizeof(uint64_t));
-    input.read(reinterpret_cast<char*>(&N_ref_size), sizeof(uint64_t));
-    printf("HQ_ref_size : %zu; LQ_ref_size : %zu; N_ref_size : %zu\n", HQ_ref_size, LQ_ref_size, N_ref_size);
+    uint8_t isRefLengthStd;
+    input.read(reinterpret_cast<char*>(&isRefLengthStd), sizeof(uint8_t));
+    uint64_t ref_size, unmapping_ref_size, unmapping_N_ref_size;
+    input.read(reinterpret_cast<char*>(&ref_size), sizeof(uint64_t));
+    input.read(reinterpret_cast<char*>(&unmapping_ref_size), sizeof(uint64_t));
+    input.read(reinterpret_cast<char*>(&unmapping_N_ref_size), sizeof(uint64_t));
     auto prepare_file = [&](const std::string& filename) {
         uint64_t size;
         input.read(reinterpret_cast<char*>(&size), sizeof(uint64_t));
@@ -327,119 +327,157 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
     prepare_file("ref.lzma2");
     if (!is_preserve_order) {
         prepare_file("read_off.lzma");
-        prepare_file("N_read_off.lzma");
-        prepare_file("LQ_read_off.lzma");
+        prepare_file("unmapping_N_read_off.lzma");
+        prepare_file("unmapping_read_off.lzma");
         if (is_paired_end) {
             prepare_file("pe_flag.bsc");
         }
     }
-    prepare_file("hq_off.map.lzma");
-    prepare_file("hq_len.map.lzma");
-    prepare_file("lq_off.map.lzma");
-    prepare_file("lq_len.map.lzma");
-    prepare_file("n_off.map.lzma");
-    prepare_file("n_len.map.lzma");
+    prepare_file("ref_off.map.lzma");
+    prepare_file("ref_len.map.lzma");
+    prepare_file("unmap_ref_off.map.lzma");
+    prepare_file("unmap_ref_len.map.lzma");
+    prepare_file("unmap_n_ref_off.map.lzma");
+    prepare_file("unmap_n_ref_len.map.lzma");
     prepare_file("mismatch_count.lzma");
     prepare_file("mismatch_base.lzma");
     uint8_t max_mismatch_count;
     input.read(reinterpret_cast<char*>(&max_mismatch_count), sizeof(uint8_t));
-    printf("max mismatch count : %u\n", max_mismatch_count);
     for (size_t i = 1; i <= max_mismatch_count; ++i) {
         prepare_file("mismatch_off_" + std::to_string(i) + ".bin");
     }
-    printf("extract archive finish\n");
 
-    auto strand_id_stream = bsc_decompress(working_path / "strand_id.bsc");
-    auto ref_stream = extract_reference(working_path, (working_path / "ref.lzma2"), HQ_ref_size + LQ_ref_size + N_ref_size);
-    auto hqPgMapOff = lzma_decompress_to_string(working_path / "hq_off.map.lzma");
-    auto hqPgMapLen = lzma_decompress_to_string(working_path / "hq_len.map.lzma");
-    auto lqPgMapOff = lzma_decompress_to_string(working_path / "lq_off.map.lzma");
-    auto lqPgMapLen = lzma_decompress_to_string(working_path / "lq_len.map.lzma");
-    auto nPgMapOff = lzma_decompress_to_string(working_path / "n_off.map.lzma");
-    auto nPgMapLen = lzma_decompress_to_string(working_path / "n_len.map.lzma");
-    auto mismatch_count_stream = lzma_decompress_to_vector<uint8_t>(working_path / "mismatch_count.lzma");
-    auto mismatch_base_stream = lzma_decompress_to_string(working_path / "mismatch_base.lzma");
-    std::vector<size_t> mismatch_count_stat(max_mismatch_count + 1, 0);
+    std::string strand_id_stream, ref_stream, pe_flag, refMapOff, refMapLen, unmapRefMapOff, unmapRefMapLen, unmapNRefMapOff, unmapNRefMapLen, mismatch_base_stream;
+    std::vector<uint8_t> mismatch_count_stream;
     std::vector<std::vector<uint16_t>> mismatch_off_stream(max_mismatch_count + 1);
-    for (size_t i = 0; i < mismatch_count_stream.size(); ++i) {
-        mismatch_count_stat[mismatch_count_stream[i]]++;
-    }
-    for (size_t i = 1; i <= max_mismatch_count; ++i) {
-        size_t output_size;
-        if (i == 1) output_size = 2 * mismatch_count_stat[i];
-        else if (i == 2) output_size = 3 * mismatch_count_stat[i];
-        else output_size = (i + 2) * mismatch_count_stat[i];
-
-        std::vector<uint16_t> ret;
-        if (read_len <= 128) {
-            ret = mismatch_offset_decompress<128>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
-        } else if (read_len <= 256) {
-            ret = mismatch_offset_decompress<256>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
-        } else if (read_len <= 384) {
-            ret = mismatch_offset_decompress<384>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
-        } else if (read_len <= 512) {
-            ret = mismatch_offset_decompress<512>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
-        } else {
-            ret = mismatch_offset_decompress<65536>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
+    std::vector<uint16_t> read_off_stream, unmap_N_read_off_stream, unmap_read_off_stream;
+    std::vector<uint32_t> id_to_pos_32;
+    std::vector<uint64_t> id_to_pos_64;
+    std::vector<std::future<void>> futures;
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        strand_id_stream = bsc_decompress(working_path / "strand_id.bsc");
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        ref_stream = extract_reference(working_path, (working_path / "ref.lzma2"), ref_size + unmapping_ref_size + unmapping_N_ref_size);
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&]  {
+        refMapOff = decompress_to_string(working_path / "ref_off.map.lzma");
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        refMapLen = decompress_to_string(working_path / "ref_len.map.lzma");
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        unmapRefMapOff = decompress_to_string(working_path / "unmap_ref_off.map.lzma");
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        unmapRefMapLen = decompress_to_string(working_path / "unmap_ref_len.map.lzma");
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        unmapNRefMapOff = decompress_to_string(working_path / "unmap_n_ref_off.map.lzma");
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        unmapNRefMapLen = decompress_to_string(working_path / "unmap_n_ref_len.map.lzma");
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        mismatch_count_stream = decompress_to_vector<uint8_t>(working_path / "mismatch_count.lzma");
+        std::vector<size_t> mismatch_count_stat(max_mismatch_count + 1, 0);
+        for (size_t i = 0; i < mismatch_count_stream.size(); ++i) {
+            mismatch_count_stat[mismatch_count_stream[i]]++;
         }
+        for (size_t i = 1; i <= max_mismatch_count; ++i) {
+            size_t output_size;
+            if (i == 1) output_size = 2 * mismatch_count_stat[i];
+            else if (i == 2) output_size = 3 * mismatch_count_stat[i];
+            else output_size = (i + 2) * mismatch_count_stat[i];
 
-        mismatch_off_stream[i].reserve(i * mismatch_count_stat[i]);
-        std::vector<uint16_t> tmp(i);
-        size_t j = 0;
-        while (j < ret.size()) {
-            bool flag = ret[j++];
-            if (!flag) {
-                tmp[0] = ret[j++];
-                if (i > 1) {
-                    if (i == 2) {
-                        tmp[1] = ret[j++] + tmp[0] + 1;
-                    } else {
-                        uint32_t min_off = ret[j++] + 1;
-                        for (size_t k = 1; k < i; ++k) {
-                            tmp[k] = ret[j++] + tmp[k - 1] + min_off;
-                        }
-                    }
-                }
+            std::vector<uint16_t> ret;
+            if (read_len <= 128) {
+                ret = mismatch_offset_decompress<128>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
+            } else if (read_len <= 256) {
+                ret = mismatch_offset_decompress<256>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
+            } else if (read_len <= 384) {
+                ret = mismatch_offset_decompress<384>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
+            } else if (read_len <= 512) {
+                ret = mismatch_offset_decompress<512>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
             } else {
-                tmp[i - 1] = read_len - 1 - ret[j++];
-                if (i > 1) {
-                    if (i == 2) {
-                        tmp[0] = tmp[1] - ret[j++] - 1;
-                    } else {
-                        uint32_t min_off = ret[j++] + 1;
-                        for (size_t k = i - 1; k > 0; --k) {
-                            tmp[k - 1] = tmp[k] - ret[j++] - min_off;
+                ret = mismatch_offset_decompress<65536>(working_path / ("mismatch_off_" + std::to_string(i) + ".bin"), i, output_size);
+            }
+
+            mismatch_off_stream[i].reserve(i * mismatch_count_stat[i]);
+            std::vector<uint16_t> tmp(i);
+            size_t j = 0;
+            while (j < ret.size()) {
+                bool flag = ret[j++];
+                if (!flag) {
+                    tmp[0] = ret[j++];
+                    if (i > 1) {
+                        if (i == 2) {
+                            tmp[1] = ret[j++] + tmp[0] + 1;
+                        } else {
+                            uint32_t min_off = ret[j++] + 1;
+                            for (size_t k = 1; k < i; ++k) {
+                                tmp[k] = ret[j++] + tmp[k - 1] + min_off;
+                            }
+                        }
+                    }
+                } else {
+                    tmp[i - 1] = read_len - 1 - ret[j++];
+                    if (i > 1) {
+                        if (i == 2) {
+                            tmp[0] = tmp[1] - ret[j++] - 1;
+                        } else {
+                            uint32_t min_off = ret[j++] + 1;
+                            for (size_t k = i - 1; k > 0; --k) {
+                                tmp[k - 1] = tmp[k] - ret[j++] - min_off;
+                            }
                         }
                     }
                 }
+                mismatch_off_stream[i].insert(mismatch_off_stream[i].end(), tmp.begin(), tmp.end());
             }
-            mismatch_off_stream[i].insert(mismatch_off_stream[i].end(), tmp.begin(), tmp.end());
         }
-    }
-
-    std::string nPgSeq(ref_stream, HQ_ref_size + LQ_ref_size);
-    ref_stream.resize(HQ_ref_size + LQ_ref_size);
-    std::string lqPgSeq(ref_stream, HQ_ref_size);
-    ref_stream.resize(HQ_ref_size);
-    ref_stream.shrink_to_fit();
-    std::string hqPgSeq = std::move(ref_stream);
-    std::istringstream hqPgOffSrc(hqPgMapOff), hqPgLenSrc(hqPgMapLen);
-    std::istringstream lqPgOffSrc(lqPgMapOff), lqPgLenSrc(lqPgMapLen);
-    std::istringstream nPgOffSrc (nPgMapOff),  nPgLenSrc(nPgMapLen);
-    std::string hqPgSrc;
-    hqPgSeq = restorePg(hqPgSeq, hqPgSrc, hqPgOffSrc, hqPgLenSrc, isPgLengthStd, true);
-    lqPgSeq = restorePg(lqPgSeq, hqPgSeq, lqPgOffSrc, lqPgLenSrc, isPgLengthStd, false);
-    nPgSeq  = restorePg(nPgSeq,  hqPgSeq, nPgOffSrc, nPgLenSrc, isPgLengthStd, false);
-
-    if (!is_preserve_order) {
-        auto read_off_stream = lzma_decompress_to_vector<uint16_t>(working_path / "read_off.lzma");
-        auto N_read_off_stream = lzma_decompress_to_vector<uint16_t>(working_path / "N_read_off.lzma");
-        auto LQ_read_off_stream = lzma_decompress_to_vector<uint16_t>(working_path / "LQ_read_off.lzma");
-        std::string pe_flag;
-        if (is_paired_end) {
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        mismatch_base_stream = decompress_to_string(working_path / "mismatch_base.lzma");
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        if (!is_preserve_order) {
+            read_off_stream = decompress_to_vector<uint16_t>(working_path / "read_off.lzma");
+            unmap_N_read_off_stream = decompress_to_vector<uint16_t>(working_path / "unmapping_N_read_off.lzma");
+            unmap_read_off_stream = decompress_to_vector<uint16_t>(working_path / "unmapping_read_off.lzma");
+        }
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        if (!is_preserve_order && is_paired_end) {
             pe_flag = bsc_decompress(working_path / "pe_flag.bsc");
         }
+    }));
+    futures.emplace_back(std::async(std::launch::async, [&] {
+        if (is_preserve_order) {
+            if (isJoinRefLengthStd) {
+                extract_id_to_pos(id_to_pos_32, working_path, is_paired_end);
+            } else {
+                extract_id_to_pos(id_to_pos_64, working_path, is_paired_end);
+            }
+        }
+    }));
+    for (auto& f : futures) f.get();
 
+    std::string unmap_N_ref_seq(ref_stream, ref_size + unmapping_ref_size);
+    ref_stream.resize(ref_size + unmapping_ref_size);
+    std::string unmap_ref_seq(ref_stream, ref_size);
+    ref_stream.resize(ref_size);
+    ref_stream.shrink_to_fit();
+    std::string ref_seq = std::move(ref_stream);
+    std::istringstream refMapOffSrc(refMapOff), refMapLenSrc(refMapLen);
+    std::istringstream unmapRefMapOffSrc(unmapRefMapOff), unmapRefMapLenSrc(unmapRefMapLen);
+    std::istringstream unmapNRefMapOffSrc (unmapNRefMapOff),  unmapNRefMapLenSrc(unmapNRefMapLen);
+    std::string ref_seq_src;
+    ref_seq = recoverRef(ref_seq, ref_seq_src, refMapOffSrc, refMapLenSrc, isRefLengthStd, true);
+    unmap_ref_seq = recoverRef(unmap_ref_seq, ref_seq, unmapRefMapOffSrc, unmapRefMapLenSrc, isRefLengthStd, false);
+    unmap_N_ref_seq = recoverRef(unmap_N_ref_seq,  ref_seq, unmapNRefMapOffSrc, unmapNRefMapLenSrc, isRefLengthStd, false);
+
+    if (!is_preserve_order) {
         uint64_t pos = 0;
         char flag;
         std::vector<size_t> mismatch_off_cur(max_mismatch_count + 1, 0);
@@ -450,7 +488,7 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
             pos += off;
             if (is_paired_end) flag = pe_flag[i];
             char strand_id = strand_id_stream[i];
-            std::string str = hqPgSeq.substr(pos, read_len);
+            std::string str = ref_seq.substr(pos, read_len);
             if (mis_cnt != 0) {
                 for (size_t k = 0; k < mis_cnt; ++k) {
                     uint16_t mismatch_pos = mismatch_off_stream[mis_cnt][mismatch_off_cur[mis_cnt]++];
@@ -474,34 +512,34 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
             }
         }
         pos = 0;
-        for (size_t i = 0; i < LQ_read_off_stream.size(); ++i) {
-            pos += (read_len - LQ_read_off_stream[i]); /// 注意偏移量的计算
+        for (size_t i = 0; i < unmap_read_off_stream.size(); ++i) {
+            pos += (read_len - unmap_read_off_stream[i]); /// 注意偏移量的计算
             if (is_paired_end) flag = pe_flag[read_off_stream.size() + i];
             if (!is_paired_end || flag == '0') {
-                o1 << lqPgSeq.substr(pos, read_len) << "\n";
+                o1 << unmap_ref_seq.substr(pos, read_len) << "\n";
             } else {
-                o2 << lqPgSeq.substr(pos, read_len) << "\n";
+                o2 << unmap_ref_seq.substr(pos, read_len) << "\n";
             }
         }
         pos = 0;
-        for (size_t i = 0; i < N_read_off_stream.size(); ++i) {
-            pos += (read_len - N_read_off_stream[i]); /// 注意偏移量的计算
-            if (is_paired_end) flag = pe_flag[read_off_stream.size() + LQ_read_off_stream.size() + i];
+        for (size_t i = 0; i < unmap_N_read_off_stream.size(); ++i) {
+            pos += (read_len - unmap_N_read_off_stream[i]); /// 注意偏移量的计算
+            if (is_paired_end) flag = pe_flag[read_off_stream.size() + unmap_read_off_stream.size() + i];
             if (!is_paired_end || flag == '0') {
-                o1 << nPgSeq.substr(pos, read_len) << "\n";
+                o1 << unmap_N_ref_seq.substr(pos, read_len) << "\n";
             } else {
-                o2 << nPgSeq.substr(pos, read_len) << "\n";
+                o2 << unmap_N_ref_seq.substr(pos, read_len) << "\n";
             }
         }
     } else {
-        if (isJoinPgLengthStd) {
-            preserve_order_process<uint32_t>(max_mismatch_count, mismatch_decoder_table, hqPgSeq, lqPgSeq, nPgSeq,
+        if (isJoinRefLengthStd) {
+            preserve_order_process<uint32_t>(mismatch_decoder_table, ref_seq, unmap_ref_seq, unmap_N_ref_seq,
                                              mismatch_base_stream, mismatch_count_stream, mismatch_off_stream,
-                                             strand_id_stream, read_len, is_paired_end, working_path, o1, o2);
+                                             strand_id_stream, id_to_pos_32, read_len, is_paired_end, working_path, o1, o2);
         } else {
-            preserve_order_process<uint64_t>(max_mismatch_count, mismatch_decoder_table, hqPgSeq, lqPgSeq, nPgSeq,
+            preserve_order_process<uint64_t>(mismatch_decoder_table, ref_seq, unmap_ref_seq, unmap_N_ref_seq,
                                              mismatch_base_stream, mismatch_count_stream, mismatch_off_stream,
-                                             strand_id_stream, read_len, is_paired_end, working_path, o1, o2);
+                                             strand_id_stream, id_to_pos_64, read_len, is_paired_end, working_path, o1, o2);
         }
     }
 }
