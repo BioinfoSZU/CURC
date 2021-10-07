@@ -626,7 +626,8 @@ struct RefMatcher {
     static constexpr size_t kmer_size = 36;
     static constexpr size_t target_match_len = 50;
     static constexpr size_t bucket_size_limit = 12;
-    static constexpr double match_result_ratio = 0.15;
+    static constexpr double ref_match_result_ratio = 0.15;
+    static constexpr double unmap_ref_match_result_ratio = 0.1;
 
 private:
     size_t ref_len;
@@ -805,7 +806,12 @@ public:
         unsigned long long matches_size;
         unsigned long long * matches_size_atomic;
         size_t dest_index_count = (dest_ref->ref_string.size() - kmer_size + 1 + dest_step - 1) / dest_step ;
-        size_t match_result_capacity = dest_index_count * match_result_ratio;
+        size_t match_result_capacity;
+        if (dest_is_ref) {
+            match_result_capacity = dest_index_count * ref_match_result_ratio;
+        } else {
+            match_result_capacity = dest_index_count * unmap_ref_match_result_ratio;
+        }
         printf("match result capacity : %zu \n", match_result_capacity);
         gpuErrorCheck(cudaMalloc((void**) &matches, match_result_capacity * sizeof(MatchResult)));
         cudaMalloc((void**) &matches_size_atomic, sizeof(unsigned long long));
@@ -825,6 +831,11 @@ public:
             match_binary_dest(dest, dest_ref->ref_string.size(), matches, matches_size_atomic, dest_index_count, dest_is_ref);
             cudaFree(dest);
             dest_ref->erase_binary_ref();
+            if (dest_is_ref) {
+                cudaFree(ref);
+                cudaFree(key_ranges);
+                cudaFree(pos_array);
+            }
         } else {
             char * dest;
             gpuErrorCheck(cudaMalloc((void**) &dest, dest_ref->ref_string.size()));
@@ -916,12 +927,12 @@ public:
                npos, getTotalMatchStat(totalMatched, dest_ref_size).c_str(), totalDestOverlap);
     }
 
-    void finish_match() {
-        cudaSetDevice(device_id);
-        cudaFree(ref);
-        cudaFree(key_ranges);
-        cudaFree(pos_array);
-    }
+//    void finish_match() {
+//        cudaSetDevice(device_id);
+//        cudaFree(ref);
+//        cudaFree(key_ranges);
+//        cudaFree(pos_array);
+//    }
 };
 
 template<size_t read_unit_size>
@@ -1956,7 +1967,7 @@ void block_compress(const uint64_t * reads_db_host,
                 matcher.template match(unmapping_N_ref.get(), unmapNRefMapOff, unmapNRefMapLen, true, false);
             }
             matcher.template match(ref.get(), refMapOff, refMapLen, false, true);
-            matcher.finish_match();
+            // matcher.finish_match();
         }
         LOCK_END
 
