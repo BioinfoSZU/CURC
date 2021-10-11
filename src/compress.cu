@@ -7,7 +7,6 @@
 #include "compress.cuh"
 #include "constant.hpp"
 #include "util.cuh"
-#include "PgMatcher.hpp"
 
 std::mutex gpu_lock[100]; // device count require <= 100
 #define LOCK_START                                               \

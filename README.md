@@ -41,6 +41,30 @@ Usage:
 ```
 
 ### Example
+Single-end order non-preserve mode
 ```bash 
-
+./curc -c -i ERP001775_1.fastq --block_ratio 0.5 -o ERP001775_1 # compress output is ERP001775_1.curc
+./curc -d -i ERP001775_1.curc -o ERP001775_1                    # decompress output is ERP001775_1.seq
 ```
+Single-end order preserve mode
+```bash 
+./curc -c -i ERP001775_1.fastq --block_ratio 0.5 -o ERP001775_1 --preserve_order # compress output is ERP001775_1.curc
+./curc -d -i ERP001775_1.curc -o ERP001775_1                                     # decompress output is ERP001775_1.seq
+```
+Paired-end order non-preserve mode
+```bash 
+./curc -c -i ERP001775_1.fastq,ERP001775_2.fastq --block_ratio 0.25 -o ERP001775 # compress output is ERP001775.curc
+./curc -d -i ERP001775.curc -o ERP001775   # decompress output is ERP001775_1.seq and ERP001775_2.seq
+```
+Paired-end order preserve mode
+```bash 
+./curc -c -i ERP001775_1.fastq,ERP001775_2.fastq --block_ratio 0.25 -o ERP001775 --preserve_order # compress output is ERP001775.curc
+./curc -d -i ERP001775.curc -o ERP001775   # decompress output is ERP001775_1.seq and ERP001775_2.seq
+```
+
+### Block ratio
+The block ratio is the ratio of the single block size to the size of the entire Fastq file.
+If the GPU memory is large enough (eg, Tesla P100-PCI-E 16G), the block size can be set to 50-60 GB. 
+If the GPU memory is small, the block size needs to be reduced to avoid out-of-memory exceptions (can be set to about 20 GB).
+
+### Bench result
