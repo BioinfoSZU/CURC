@@ -616,9 +616,9 @@ struct RefMatcher {
         if (L % 2) seq[L / 2] = PgSAHelpers::reverseComplement(seq[L / 2]);
     }
 
-    static string getTotalMatchStat(uint64_t totalMatchLength, uint64_t destPgLength) {
-        return PgSAHelpers::toString(totalMatchLength) + " (" + PgSAHelpers::toString((totalMatchLength * 100.0) / destPgLength, 1) + "%)";
-    }
+//    static string getTotalMatchStat(uint64_t totalMatchLength, uint64_t destPgLength) {
+//        return PgSAHelpers::toString(totalMatchLength) + " (" + PgSAHelpers::toString((totalMatchLength * 100.0) / destPgLength, 1) + "%)";
+//    }
 
     static constexpr size_t src_step = 5;
     static constexpr size_t dest_step = 3;
@@ -798,9 +798,9 @@ public:
     }
 
     template<size_t read_unit_size>
-    void match(RefRecord<read_unit_size> * dest_ref, std::string& resPgMapOff, std::string& resPgMapLen, bool dest_contain_N, bool dest_is_ref) {
+    void match(RefRecord<read_unit_size> * dest_ref, std::string& MapOff, std::string& MapLen, bool dest_contain_N, bool dest_is_ref) {
         cudaSetDevice(device_id);
-        auto dest_ref_size = dest_ref->ref_string.size();
+        // auto dest_ref_size = dest_ref->ref_string.size();
         MatchResult * matches, * matches_host;
         unsigned long long matches_size;
         unsigned long long * matches_size_atomic;
@@ -811,7 +811,7 @@ public:
         } else {
             match_result_capacity = dest_index_count * unmap_ref_match_result_ratio;
         }
-        printf("match result capacity : %zu \n", match_result_capacity);
+        // printf("match result capacity : %zu \n", match_result_capacity);
         gpuErrorCheck(cudaMalloc((void**) &matches, match_result_capacity * sizeof(MatchResult)));
         cudaMalloc((void**) &matches_size_atomic, sizeof(unsigned long long));
         cudaMemset(matches_size_atomic, 0, sizeof(unsigned long long));
@@ -844,7 +844,7 @@ public:
         }
 
         cudaMemcpy(&matches_size, matches_size_atomic, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
-        printf("matches result size : %llu\n", matches_size);
+        // printf("matches result size : %llu\n", matches_size);
         thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(matches_size),
                          [matches, dest_len=dest_ref->ref_string.size()] __device__(size_t i) {
                              matches[i].posDest = dest_len - (matches[i].posDest + matches[i].length);
@@ -868,18 +868,18 @@ public:
 
         thrust::sort(thrust::device, matches, matches + matches_size);
         matches_size = thrust::unique(thrust::device, matches, matches + matches_size) - matches;
-        printf("Unique exact matches: %llu\n", matches_size);
+        // printf("Unique exact matches: %llu\n", matches_size);
         cudaMallocHost((void**) &matches_host, matches_size * sizeof(MatchResult));
         cudaMemcpy(matches_host, matches, matches_size * sizeof(MatchResult), cudaMemcpyDeviceToHost);
         cudaFree(matches);
         cudaFree(matches_size_atomic);
         reverse_complement(dest_ref->ref_string);
 
-        std::ostringstream pgMapOffDest;
-        std::ostringstream pgMapLenDest;
-        PgSAHelpers::writeUIntByteFrugal(pgMapLenDest, target_match_len);
+        std::ostringstream MapOffDest;
+        std::ostringstream MapLenDest;
+        PgSAHelpers::writeUIntByteFrugal(MapLenDest, target_match_len);
 
-        char * dest_ptr = &dest_ref->ref_string[0]; // destPg.data(); // gcc >= 7.5 才支持返回非const的data pointer
+        char * dest_ptr = &dest_ref->ref_string[0];
         uint64_t pos = 0, npos = 0, totalDestOverlap = 0, totalMatched = 0;
         bool is_ref_len_std = ref_len <= UINT32_MAX;
         for (size_t i = 0; i < matches_size; ++i) {
@@ -905,11 +905,11 @@ public:
             npos += length;
             dest_ref->ref_string[npos++] = '%'; // mark
             if (is_ref_len_std) {
-                PgSAHelpers::writeValue<uint32_t>(pgMapOffDest, match.posSrc);
+                PgSAHelpers::writeValue<uint32_t>(MapOffDest, match.posSrc);
             } else {
-                PgSAHelpers::writeValue<uint64_t>(pgMapOffDest, match.posSrc);
+                PgSAHelpers::writeValue<uint64_t>(MapOffDest, match.posSrc);
             }
-            PgSAHelpers::writeUIntByteFrugal(pgMapLenDest, match.length - target_match_len);
+            PgSAHelpers::writeUIntByteFrugal(MapLenDest, match.length - target_match_len);
             pos = match.posDest + match.length;
         }
         uint64_t length = dest_ref->ref_string.size() - pos;
@@ -918,12 +918,12 @@ public:
         dest_ref->ref_string.resize(npos);
 
         cudaFreeHost(matches_host);
-        resPgMapOff = pgMapOffDest.str();
-        pgMapOffDest.clear();
-        resPgMapLen = pgMapLenDest.str();
-        pgMapLenDest.clear();
-        printf("Final size of Pg: %zu (remove: %s ; %zu chars in overlapped dest symbol)\n",
-               npos, getTotalMatchStat(totalMatched, dest_ref_size).c_str(), totalDestOverlap);
+        MapOff = MapOffDest.str();
+        MapOffDest.clear();
+        MapLen = MapLenDest.str();
+        MapLenDest.clear();
+//        printf("Final size of Pg: %zu (remove: %s ; %zu chars in overlapped dest symbol)\n",
+//               npos, getTotalMatchStat(totalMatched, dest_ref_size).c_str(), totalDestOverlap);
     }
 
 //    void finish_match() {
@@ -970,14 +970,14 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
             };
 
             uint32_t * A_C_merge_suffix_id;
-            cudaMalloc((void**)&A_C_merge_suffix_id, (G_part_begin - A_part_begin) * sizeof(uint32_t));
+            gpuErrorCheck(cudaMalloc((void**)&A_C_merge_suffix_id, (G_part_begin - A_part_begin) * sizeof(uint32_t)));
             thrust::merge(thrust::device,
                           suffix_reads_id + A_part_begin, suffix_reads_id + C_part_begin,
                           suffix_reads_id + C_part_begin, suffix_reads_id + G_part_begin,
                           A_C_merge_suffix_id, compare);
 
             uint32_t * G_T_merge_suffix_id;
-            cudaMalloc((void**)&G_T_merge_suffix_id, (cnt - G_part_begin) * sizeof(uint32_t));
+            gpuErrorCheck(cudaMalloc((void**)&G_T_merge_suffix_id, (cnt - G_part_begin) * sizeof(uint32_t)));
             thrust::merge(thrust::device,
                           suffix_reads_id + G_part_begin, suffix_reads_id + T_part_begin,
                           suffix_reads_id + T_part_begin, suffix_reads_id + cnt,
@@ -1506,8 +1506,8 @@ void block_compress(const uint64_t * reads_db_host,
             uint32_t prefix_reads_count, suffix_reads_count;
             prefix_reads_count = suffix_reads_count = thrust::count_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count,
                                      [next] __device__ (uint32_t id) { return next[id] == INVALID; });
-            cudaMalloc((void**) &prefix_reads_id, prefix_reads_count * sizeof(uint32_t));
-            cudaMalloc((void**) &suffix_reads_id, suffix_reads_count * sizeof(uint32_t));
+            gpuErrorCheck(cudaMalloc((void**) &prefix_reads_id, prefix_reads_count * sizeof(uint32_t)));
+            gpuErrorCheck(cudaMalloc((void**) &suffix_reads_id, suffix_reads_count * sizeof(uint32_t)));
             thrust::copy_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count, prefix_reads_id,
                             [prev] __device__ (uint32_t id) { return prev[id] == INVALID; });
             thrust::copy_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count, suffix_reads_id,
@@ -1582,12 +1582,12 @@ void block_compress(const uint64_t * reads_db_host,
             uint32_t * next_device;
             uint16_t * offset_device;
 
-            cudaMalloc((void**) &reads_db, unmapping_reads_count * read_unit_size * sizeof(uint64_t));
-            cudaMalloc((void**) &prefix_reads_id, unmapping_reads_count * sizeof(uint32_t));
-            cudaMalloc((void**) &suffix_reads_id, unmapping_reads_count * sizeof(uint32_t));
-            cudaMalloc((void**) &prev_device, unmapping_reads_count * sizeof(uint32_t));
-            cudaMalloc((void**) &next_device, unmapping_reads_count * sizeof(uint32_t));
-            cudaMalloc((void**) &offset_device, unmapping_reads_count * sizeof(uint16_t));
+            gpuErrorCheck(cudaMalloc((void**) &reads_db, unmapping_reads_count * read_unit_size * sizeof(uint64_t)));
+            gpuErrorCheck(cudaMalloc((void**) &prefix_reads_id, unmapping_reads_count * sizeof(uint32_t)));
+            gpuErrorCheck(cudaMalloc((void**) &suffix_reads_id, unmapping_reads_count * sizeof(uint32_t)));
+            gpuErrorCheck(cudaMalloc((void**) &prev_device, unmapping_reads_count * sizeof(uint32_t)));
+            gpuErrorCheck(cudaMalloc((void**) &next_device, unmapping_reads_count * sizeof(uint32_t)));
+            gpuErrorCheck(cudaMalloc((void**) &offset_device, unmapping_reads_count * sizeof(uint16_t)));
             thrust::sequence(thrust::device, prefix_reads_id, prefix_reads_id + unmapping_reads_count, 0);
             thrust::sequence(thrust::device, suffix_reads_id, suffix_reads_id + unmapping_reads_count, 0);
             thrust::uninitialized_fill(thrust::device, prev_device, prev_device + unmapping_reads_count, INVALID);
@@ -1937,18 +1937,6 @@ void block_compress(const uint64_t * reads_db_host,
         uint8_t isRefLengthStd = ref->ref_string.size() <= UINT32_MAX;
         output_file.write(reinterpret_cast<const char*>(&isRefLengthStd), sizeof(uint8_t));
 
-//        PgMatcher matcher(ref->ref_string);
-//        std::string lqPgMapOff, lqPgMapLen;
-//        if (!unmapping_ref->ref_string.empty()) {
-//            matcher.markAndRemoveExactMatches(false, unmapping_ref->ref_string, lqPgMapOff, lqPgMapLen);
-//        }
-//        std::string nPgMapOff, nPgMapLen;
-//        if (!unmapping_N_ref->ref_string.empty()) {
-//            matcher.markAndRemoveExactMatches(false, unmapping_N_ref->ref_string, nPgMapOff, nPgMapLen);
-//        }
-//        std::string hqPgMapOff, hqPgMapLen;
-//        matcher.markAndRemoveExactMatches(true, ref->ref_string, hqPgMapOff, hqPgMapLen);
-
         std::string unmapRefMapOff, unmapRefMapLen;
         std::string unmapNRefMapOff, unmapNRefMapLen;
         std::string refMapOff, refMapLen;
@@ -2145,7 +2133,7 @@ void process(const Param& param) {
                         for (size_t j = 0, k = new_buffer_end; j < first_line_len; j++, k++) {
                             if (io_buffer[j] == io_buffer[k]) {
                                 equal_count++;
-                                if (equal_count > 5) { // 判断是第一行
+                                if (equal_count > 5) {
                                     goto get_end_finish;
                                 }
                             } else {
