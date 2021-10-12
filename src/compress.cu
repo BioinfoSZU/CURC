@@ -1281,8 +1281,6 @@ void full_match_cpu(const char* N_reads_db_host, uint32_t * unmapping_N_reads_id
     ref_ptr->assembly(N_reads_db_host, unmapping_N_reads_id, unmapping_N_reads_count, next.data(), prev.data(), offset.data(), N_reads_count, param.read_len);
 }
 
-// TODO 注意分块以后有可能出现 N_reads_db_host 为空的情况, 如果没有 N_reads_db 在 ReadMapper 传数据的时候会有一点 bug.
-//      不过目前只在超大文件上进行分块且块规模很大, 应该还不至于没有 N_reads.
 template<size_t read_unit_size>
 void block_compress(const uint64_t * reads_db_host,
                     std::vector<uint32_t> reads_id,
@@ -2062,8 +2060,6 @@ void process(const Param& param) {
         printf("gpu context init finish\n");
     });
 
-    // TODO 有关 block_ratio , 数据集大小 , 显存大小 , 最后压缩率 各自之间的关系可以做一个测试,
-    //      最后根据测试的结果分析最好的 block_ratio 设置值, 自动给出一个合适的 block_ratio.
     uint64_t * reads_db_host;
     size_t reads_count = 0;
     uint8_t blocks_count = 0;
@@ -2342,30 +2338,30 @@ void compress(Param& param) {
         case 8: // <= 256 bases
             process<8>(param);
             break;
-//        case 9: // <= 288 bases
-//            process<9>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 10: // <= 320 bases
-//            process<10>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 11: // <= 352 bases
-//            process<11>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 12: // <= 384 bases
-//            process<12>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 13: // <= 416 bases
-//            process<13>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 14: // <= 448 bases
-//            process<14>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 15: // <= 480 bases
-//            process<15>(opt, read_len, reads_data_ratio);
-//            break;
-//        case 16: // <= 512 bases
-//            process<16>(opt, read_len, reads_data_ratio);
-//            break;
+        case 9: // <= 288 bases
+            process<9>(param);
+            break;
+        case 10: // <= 320 bases
+            process<10>(param);
+            break;
+        case 11: // <= 352 bases
+            process<11>(param);
+            break;
+        case 12: // <= 384 bases
+            process<12>(param);
+            break;
+        case 13: // <= 416 bases
+            process<13>(param);
+            break;
+        case 14: // <= 448 bases
+            process<14>(param);
+            break;
+        case 15: // <= 480 bases
+            process<15>(param);
+            break;
+        case 16: // <= 512 bases
+            process<16>(param);
+            break;
         default:
             printf("Read length must be less than 512");
             break;
