@@ -64,7 +64,7 @@ Paired-end order preserving mode
 ```
 
 ### Sample data
-[SRR554369_1.fastq.gz](data/SRR554369_1.fastq.gz)
+[sample.fastq.gz](data/sample.fastq.gz)
 
 ### Block ratio
 The block ratio is the ratio of the single block size to the size of the entire Fastq file.
