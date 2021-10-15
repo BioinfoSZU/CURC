@@ -1,6 +1,7 @@
 #include "decompress.hpp"
 #include <bits/stdc++.h>
 #include <parallel/algorithm>
+#include <thrust/system/omp/execution_policy.h>
 #include <experimental/filesystem>
 #ifndef ABS
 #define ABS std::abs
@@ -42,7 +43,7 @@ std::string extract_reference(const fs::path& working_path, const fs::path& path
 }
 
 template<typename T>
-void extract_id_to_pos(std::vector<T>& id_to_pos, const fs::path& working_path, bool is_paired_end) {
+void extract_id_to_pos(std::vector<T>& id_to_pos, const fs::path& working_path, bool is_paired_end, uint32_t total_reads_count) {
     if (!is_paired_end) {
         lzma2::lzma2_decompress((working_path / "id_pos.comp").c_str(), (working_path / "id_pos.bin").c_str());
         {
@@ -62,8 +63,8 @@ void extract_id_to_pos(std::vector<T>& id_to_pos, const fs::path& working_path, 
             out.write(buffer.data(), size);
         };
 
-        uint32_t total_reads_count;
-        in.read(reinterpret_cast<char*>(&total_reads_count), 4);
+//        uint32_t total_reads_count;
+//        in.read(reinterpret_cast<char*>(&total_reads_count), 4);
         id_to_pos.reserve(total_reads_count);
 
         vector<uint8_t> offsetInUint16Flag;
@@ -144,7 +145,7 @@ void extract_id_to_pos(std::vector<T>& id_to_pos, const fs::path& working_path, 
             }
             id_to_pos[pairsCount + p] = nbpPos;
         }
-        /// 前面计算得到的 id_to_pos 左半部分是第一个文件的, 右半部分是第二个文件的, 这里需要进一步交叉开
+
         std::vector<T> right_part(pairsCount);
         for (size_t i = 0; i < pairsCount; ++i) {
             right_part[i] = id_to_pos[pairsCount + i];
@@ -152,6 +153,88 @@ void extract_id_to_pos(std::vector<T>& id_to_pos, const fs::path& working_path, 
         }
         for (size_t i = 0; i < pairsCount; ++i) id_to_pos[i * 2] = id_to_pos[pairsCount + i];
         for (size_t i = 0; i < pairsCount; ++i) id_to_pos[i * 2 + 1] = right_part[i];
+    }
+}
+
+void extract_pe_pair_order(std::vector<uint32_t>& pe_pair_order, const fs::path& working_path, uint32_t reads_count) {
+    std::ifstream in(working_path / "pe_order.comp");
+    auto prepare_file = [&](const std::string& filename) {
+        uint64_t size;
+        in.read(reinterpret_cast<char*>(&size), sizeof(uint64_t));
+        std::vector<char> buffer(size);
+        in.read(buffer.data(), size);
+        std::ofstream out(working_path / filename);
+        out.write(buffer.data(), size);
+    };
+    std::vector<uint8_t> offsetPairFlag;
+    std::vector<uint8_t> nonOffsetPairFlag;
+    std::vector<uint8_t> offsetInUint8Flag;
+    std::vector<uint8_t> offsetInUint8Value;
+    std::vector<uint8_t> deltaInInt8Flag;
+    std::vector<int8_t>  deltaInInt8Value;
+    std::vector<uint32_t> offset;
+    readCompressed<uint8_t>(in, offsetInUint8Flag);
+    readCompressed<uint8_t>(in, offsetInUint8Value);
+    readCompressed<uint8_t>(in, deltaInInt8Flag);
+    readCompressed<uint8_t>(in, offsetPairFlag);
+    readCompressed<uint8_t>(in, nonOffsetPairFlag);
+    prepare_file("delta.lzma2");
+    lzma2::lzma2_decompress((working_path / "delta.lzma2").c_str(), (working_path / "delta.bin").c_str());
+    {
+        auto size = fs::file_size(working_path / "delta.bin");
+        deltaInInt8Value.resize(size / sizeof(int8_t));
+        std::ifstream delta_file(working_path / "delta.bin");
+        delta_file.read(reinterpret_cast<char *>(deltaInInt8Value.data()), size);
+    }
+    prepare_file("offset.lzma2");
+    lzma2::lzma2_decompress((working_path / "offset.lzma2").c_str(), (working_path / "offset.bin").c_str());
+    {
+        auto size = fs::file_size(working_path / "offset.bin");
+        offset.resize(size / sizeof(uint32_t));
+        std::ifstream offset_file(working_path / "offset.bin");
+        offset_file.read(reinterpret_cast<char *>(offset.data()), size);
+    }
+
+    pe_pair_order.resize(reads_count);
+    std::vector<bool> visit(reads_count, false);
+    int64_t pair_count = -1;
+    int64_t offsetInUint8ValueIdx = -1;
+    int64_t deltaInInt8FlagIdx = -1;
+    int64_t deltaInInt8ValueIdx = -1;
+    int64_t offsetIdx = -1;
+    int64_t ref_prev_offset = 0;
+    int64_t prev_offset = 0;
+    int64_t pair_index_offset = 0;
+    bool match = false;
+
+    for (uint32_t i = 0; i < reads_count; ++i) {
+        if (visit[i]) continue;
+        if (offsetInUint8Flag[++pair_count]) {
+            pair_index_offset = offsetInUint8Value[++offsetInUint8ValueIdx];
+        } else if (deltaInInt8Flag[++deltaInInt8FlagIdx]) {
+            pair_index_offset = ref_prev_offset + deltaInInt8Value[++deltaInInt8ValueIdx];
+            ref_prev_offset = pair_index_offset;
+            match = true;
+            prev_offset = pair_index_offset;
+        } else {
+            pair_index_offset = offset[++offsetIdx];
+            if (!match || ref_prev_offset != prev_offset) {
+                ref_prev_offset = pair_index_offset;
+            }
+            match = false;
+            prev_offset = pair_index_offset;
+        }
+        pe_pair_order[pair_count * 2] = i;
+        pe_pair_order[pair_count * 2 + 1] = i + pair_index_offset;
+        visit[i + pair_index_offset] = true;
+    }
+    int64_t offsetPairFlagIdx = -1;
+    int64_t nonOffsetPairFlagIdx = -1;
+    for (uint32_t i = 0; i < reads_count / 2; ++i) {
+        bool is_swap = offsetInUint8Flag[i] ? offsetPairFlag[++offsetPairFlagIdx] : nonOffsetPairFlag[++nonOffsetPairFlagIdx];
+        if (is_swap) {
+            std::swap(pe_pair_order[i * 2], pe_pair_order[i * 2 + 1]);
+        }
     }
 }
 
@@ -297,7 +380,9 @@ void preserve_order_process(
 void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & o2,
                       bool is_preserve_order, bool is_paired_end,
                       uint16_t read_len, const fs::path& working_path) {
+    uint32_t reads_count;
     char mismatch_decoder_table[128][4];
+    input.read(reinterpret_cast<char*>(&reads_count), sizeof(uint32_t));
     input.read(mismatch_decoder_table['A'], 4);
     input.read(mismatch_decoder_table['T'], 4);
     input.read(mismatch_decoder_table['C'], 4);
@@ -330,7 +415,8 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
         prepare_file("unmapping_N_read_off.lzma");
         prepare_file("unmapping_read_off.lzma");
         if (is_paired_end) {
-            prepare_file("pe_flag.bsc");
+            // prepare_file("pe_flag.bsc");
+            prepare_file("pe_order.comp");
         }
     }
     prepare_file("ref_off.map.lzma");
@@ -347,12 +433,13 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
         prepare_file("mismatch_off_" + std::to_string(i) + ".bin");
     }
 
-    std::string strand_id_stream, ref_stream, pe_flag, refMapOff, refMapLen, unmapRefMapOff, unmapRefMapLen, unmapNRefMapOff, unmapNRefMapLen, mismatch_base_stream;
+    std::string strand_id_stream, ref_stream, /*pe_flag,*/ refMapOff, refMapLen, unmapRefMapOff, unmapRefMapLen, unmapNRefMapOff, unmapNRefMapLen, mismatch_base_stream;
     std::vector<uint8_t> mismatch_count_stream;
     std::vector<std::vector<uint16_t>> mismatch_off_stream(max_mismatch_count + 1);
     std::vector<uint16_t> read_off_stream, unmap_N_read_off_stream, unmap_read_off_stream;
     std::vector<uint32_t> id_to_pos_32;
     std::vector<uint64_t> id_to_pos_64;
+    std::vector<uint32_t> pe_pair_order;
     std::vector<std::future<void>> futures;
     futures.emplace_back(std::async(std::launch::async, [&] {
         strand_id_stream = bsc_decompress(working_path / "strand_id.bsc");
@@ -449,15 +536,16 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
     }));
     futures.emplace_back(std::async(std::launch::async, [&] {
         if (!is_preserve_order && is_paired_end) {
-            pe_flag = bsc_decompress(working_path / "pe_flag.bsc");
+            // pe_flag = bsc_decompress(working_path / "pe_flag.bsc");
+            extract_pe_pair_order(pe_pair_order, working_path, reads_count);
         }
     }));
     futures.emplace_back(std::async(std::launch::async, [&] {
         if (is_preserve_order) {
             if (isJoinRefLengthStd) {
-                extract_id_to_pos(id_to_pos_32, working_path, is_paired_end);
+                extract_id_to_pos(id_to_pos_32, working_path, is_paired_end, reads_count);
             } else {
-                extract_id_to_pos(id_to_pos_64, working_path, is_paired_end);
+                extract_id_to_pos(id_to_pos_64, working_path, is_paired_end, reads_count);
             }
         }
     }));
@@ -478,57 +566,122 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
     unmap_N_ref_seq = recoverRef(unmap_N_ref_seq,  ref_seq, unmapNRefMapOffSrc, unmapNRefMapLenSrc, isRefLengthStd, false);
 
     if (!is_preserve_order) {
-        uint64_t pos = 0;
-        char flag;
-        std::vector<size_t> mismatch_off_cur(max_mismatch_count + 1, 0);
-        size_t mismatch_base_cur = 0;
-        for (size_t i = 0; i < read_off_stream.size(); ++i) {
-            uint8_t mis_cnt = mismatch_count_stream[i];
-            uint16_t off = read_off_stream[i];
-            pos += off;
-            if (is_paired_end) flag = pe_flag[i];
-            char strand_id = strand_id_stream[i];
-            std::string str = ref_seq.substr(pos, read_len);
-            if (mis_cnt != 0) {
-                for (size_t k = 0; k < mis_cnt; ++k) {
-                    uint16_t mismatch_pos = mismatch_off_stream[mis_cnt][mismatch_off_cur[mis_cnt]++];
-                    char origin_base = str[mismatch_pos];
-                    char mismatch_base = mismatch_decoder_table[origin_base][mismatch_base_stream[mismatch_base_cur++]];
-                    str[mismatch_pos] = mismatch_base;
+        if (!is_paired_end) {
+            uint64_t pos = 0;
+            std::vector<size_t> mismatch_off_cur(max_mismatch_count + 1, 0);
+            size_t mismatch_base_cur = 0;
+            for (size_t i = 0; i < read_off_stream.size(); ++i) {
+                uint8_t mis_cnt = mismatch_count_stream[i];
+                uint16_t off = read_off_stream[i];
+                pos += off;
+                char strand_id = strand_id_stream[i];
+                std::string str = ref_seq.substr(pos, read_len);
+                if (mis_cnt != 0) {
+                    for (size_t k = 0; k < mis_cnt; ++k) {
+                        uint16_t mismatch_pos = mismatch_off_stream[mis_cnt][mismatch_off_cur[mis_cnt]++];
+                        char origin_base = str[mismatch_pos];
+                        char mismatch_base = mismatch_decoder_table[origin_base][mismatch_base_stream[mismatch_base_cur++]];
+                        str[mismatch_pos] = mismatch_base;
+                    }
                 }
-            }
-            if (strand_id == '0') {
-                if (!is_paired_end || flag == '0') {
+                if (strand_id == '0') {
                     o1 << str << "\n";
                 } else {
-                    o2 << str << "\n";
-                }
-            } else {
-                if (!is_paired_end || flag == '0') {
                     o1 << PgSAHelpers::reverseComplement(str) << "\n";
-                } else {
-                    o2 << PgSAHelpers::reverseComplement(str) << "\n";
                 }
             }
-        }
-        pos = 0;
-        for (size_t i = 0; i < unmap_read_off_stream.size(); ++i) {
-            pos += (read_len - unmap_read_off_stream[i]); /// 注意偏移量的计算
-            if (is_paired_end) flag = pe_flag[read_off_stream.size() + i];
-            if (!is_paired_end || flag == '0') {
+            pos = 0;
+            for (size_t i = 0; i < unmap_read_off_stream.size(); ++i) {
+                pos += (read_len - unmap_read_off_stream[i]);
                 o1 << unmap_ref_seq.substr(pos, read_len) << "\n";
-            } else {
-                o2 << unmap_ref_seq.substr(pos, read_len) << "\n";
             }
-        }
-        pos = 0;
-        for (size_t i = 0; i < unmap_N_read_off_stream.size(); ++i) {
-            pos += (read_len - unmap_N_read_off_stream[i]); /// 注意偏移量的计算
-            if (is_paired_end) flag = pe_flag[read_off_stream.size() + unmap_read_off_stream.size() + i];
-            if (!is_paired_end || flag == '0') {
+            pos = 0;
+            for (size_t i = 0; i < unmap_N_read_off_stream.size(); ++i) {
+                pos += (read_len - unmap_N_read_off_stream[i]);
                 o1 << unmap_N_ref_seq.substr(pos, read_len) << "\n";
-            } else {
-                o2 << unmap_N_ref_seq.substr(pos, read_len) << "\n";
+            }
+        } else {
+            auto inclusive_scan = [read_len] (std::vector<uint64_t>& sum, const std::vector<uint16_t>& value, bool is_complement_off) {
+                if (!is_complement_off) {
+                    sum[0] = value[0];
+                    for (size_t i = 1; i < sum.size(); ++i) sum[i] = sum[i - 1] + value[i];
+                } else {
+                    sum[0] = read_len - value[0];
+                    for (size_t i = 1; i < sum.size(); ++i) sum[i] = sum[i - 1] + (read_len - value[i]);
+                }
+            };
+
+            std::vector<uint64_t> read_pos(read_off_stream.size());
+            inclusive_scan(read_pos, read_off_stream, false);
+            read_off_stream.clear();
+            read_off_stream.shrink_to_fit();
+
+            std::vector<uint64_t> unmap_read_pos(unmap_read_off_stream.size());
+            inclusive_scan(unmap_read_pos, unmap_read_off_stream, true);
+            unmap_read_off_stream.clear();
+            unmap_read_off_stream.shrink_to_fit();
+
+            std::vector<uint64_t> unmap_N_read_pos(unmap_N_read_off_stream.size());
+            inclusive_scan(unmap_N_read_pos, unmap_N_read_off_stream, true);
+            unmap_N_read_off_stream.clear();
+            unmap_N_read_off_stream.shrink_to_fit();
+
+            std::vector<size_t> mismatch_off_cur(max_mismatch_count + 1, 0);
+            size_t mismatch_base_cur = 0;
+            std::vector<uint32_t> mismatch_off_start_pos(read_pos.size(), 0);
+            std::vector<uint32_t> mismatch_base_start_pos(read_pos.size(), 0);
+            for (size_t i = 0; i < read_pos.size(); ++i) {
+                if (mismatch_count_stream[i] != 0) {
+                    mismatch_off_start_pos[i] = mismatch_off_cur[mismatch_count_stream[i]];
+                    mismatch_base_start_pos[i] = mismatch_base_cur;
+                    mismatch_off_cur[mismatch_count_stream[i]] += mismatch_count_stream[i];
+                    mismatch_base_cur += mismatch_count_stream[i];
+                }
+            }
+
+
+            for (size_t idx = 0; idx < reads_count; ++idx) {
+                uint32_t i = pe_pair_order[idx];
+                if (i < read_pos.size()) {
+                    uint8_t mis_cnt = mismatch_count_stream[i];
+                    char strand_id = strand_id_stream[i];
+                    std::string str = ref_seq.substr(read_pos[i], read_len);
+                    if (mis_cnt != 0) {
+                        for (size_t k = 0; k < mis_cnt; ++k) {
+                            uint16_t mismatch_pos = mismatch_off_stream[mis_cnt][mismatch_off_start_pos[i] + k];
+                            char origin_base = str[mismatch_pos];
+                            char mismatch_base = mismatch_decoder_table[origin_base][mismatch_base_stream[mismatch_base_start_pos[i] + k]];
+                            str[mismatch_pos] = mismatch_base;
+                        }
+                    }
+                    if (strand_id == '0') {
+                        if (idx % 2 == 0) {
+                            o1 << str << "\n";
+                        } else {
+                            o2 << str << "\n";
+                        }
+                    } else {
+                        if (idx % 2 == 0) {
+                            o1 << PgSAHelpers::reverseComplement(str) << "\n";
+                        } else {
+                            o2 << PgSAHelpers::reverseComplement(str) << "\n";
+                        }
+                    }
+                } else if (i < (read_pos.size() + unmap_read_pos.size())) {
+                    i -= read_pos.size();
+                    if (idx % 2 == 0) {
+                        o1 << unmap_ref_seq.substr(unmap_read_pos[i], read_len) << "\n";
+                    } else {
+                        o2 << unmap_ref_seq.substr(unmap_read_pos[i], read_len) << "\n";
+                    }
+                } else {
+                    i -= (read_pos.size() + unmap_read_pos.size());
+                    if (idx % 2 == 0) {
+                        o1 << unmap_N_ref_seq.substr(unmap_N_read_pos[i], read_len) << "\n";
+                    } else {
+                        o2 << unmap_N_ref_seq.substr(unmap_N_read_pos[i], read_len) << "\n";
+                    }
+                }
             }
         }
     } else {

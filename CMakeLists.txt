@@ -93,11 +93,13 @@ add_custom_target(
 add_executable(curc src/main.cpp src/compress.cu src/decompress.cpp src/fast_lzma2_helper.cpp ${LZMA_FILES})
 add_executable(bsc ${LIBBSC_SOURCE_FILES})
 add_executable(bench bench/benchmark.cpp)
+add_executable(sort_pe_read bench/sort_pe_read.cpp)
 
 add_dependencies(curc FastLZMA2)
 target_link_libraries(curc PRIVATE stdc++fs CUDA::toolkit Threads::Threads ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fast-lzma2/libfast-lzma2.a)
 target_link_libraries(bsc  PRIVATE Threads::Threads)
 target_link_libraries(bench PRIVATE stdc++fs Threads::Threads)
+target_link_libraries(sort_pe_read PRIVATE stdc++fs Threads::Threads)
 
 set_target_properties(
         curc

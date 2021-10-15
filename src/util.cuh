@@ -300,9 +300,8 @@ void mismatch_offset_compress(const std::vector<uint16_t> & mismatch_offset_arra
     write_vector_to_binary_file(compressed_output, name + suffix);
 }
 
-template<typename uint_pg_len>
-void paired_end_id_to_pos_compression(const std::vector<uint64_t>& id_to_pos, uint64_t joinedPgLength,
-                                      std::ofstream& out, const fs::path& working_path, int level, int t_num) {
+template<typename RefLenType>
+void paired_end_id_to_pos_compression(const std::vector<uint64_t>& id_to_pos, std::ofstream& out, const fs::path& working_path, int level, int t_num) {
     auto read_file_and_output = [&](const fs::path &filename) {
         std::vector<uint8_t> data;
         read_vector_from_binary_file(data, filename);
@@ -311,14 +310,14 @@ void paired_end_id_to_pos_compression(const std::vector<uint64_t>& id_to_pos, ui
         PgSAHelpers::writeArray(out, data.data(), size);
     };
 
-    vector<uint_pg_len> basePairPos;
+    vector<RefLenType> basePairPos;
     vector<uint8_t> offsetInUint16Flag;
     vector<uint8_t> offsetIsBaseFirstFlag;
     vector<uint16_t> offsetInUint16Value;
     vector<uint8_t> deltaInInt16Flag;
     vector<uint8_t> deltaIsBaseFirstFlag;
     vector<int16_t> deltaInInt16Value;
-    vector<uint_pg_len> notBasePairPos;
+    vector<RefLenType> notBasePairPos;
     const uint32_t pairsCount = id_to_pos.size() / 2;
     basePairPos.reserve(pairsCount);
     offsetInUint16Flag.reserve(pairsCount);
@@ -345,7 +344,7 @@ void paired_end_id_to_pos_compression(const std::vector<uint64_t>& id_to_pos, ui
         uint32_t i = bppRank[p] * 2;
 
         bool isBaseBefore = id_to_pos[i] < id_to_pos[i + 1];
-        uint_pg_len relativeAbsOffset = isBaseBefore?(id_to_pos[i + 1] - id_to_pos[i]):
+        RefLenType relativeAbsOffset = isBaseBefore?(id_to_pos[i + 1] - id_to_pos[i]):
                                         id_to_pos[i] - id_to_pos[i + 1];
         const bool isOffsetInUint16 = relativeAbsOffset <= UINT16_MAX;
         offsetInUint16Flag.push_back(isOffsetInUint16 ? 1 : 0);
@@ -366,18 +365,18 @@ void paired_end_id_to_pos_compression(const std::vector<uint64_t>& id_to_pos, ui
             } else {
                 if (!match || refPrev != prev)
                     refPrev = relativeAbsOffset;
-                notBasePairPos.push_back((uint_pg_len) id_to_pos[i + 1]);
+                notBasePairPos.push_back((RefLenType) id_to_pos[i + 1]);
                 match = false;
             }
             prev = relativeAbsOffset;
         }
     }
 
-    uint32_t total_reads_count = id_to_pos.size();
-    out.write(reinterpret_cast<const char*>(&total_reads_count), 4);
+//    uint32_t total_reads_count = id_to_pos.size();
+//    out.write(reinterpret_cast<const char*>(&total_reads_count), 4);
 
     std::ofstream base_pair_pos_file(working_path / "base_pair_pos.bin");
-    PgSAHelpers::writeArray(base_pair_pos_file, basePairPos.data(), basePairPos.size() * sizeof(uint_pg_len));
+    PgSAHelpers::writeArray(base_pair_pos_file, basePairPos.data(), basePairPos.size() * sizeof(RefLenType));
     lzma2::lzma2_compress((working_path / "base_pair_pos.bin").c_str(), (working_path / "base_pair_pos.lzma2").c_str(), level, t_num);
     read_file_and_output(working_path / "base_pair_pos.lzma2");
 
@@ -395,9 +394,92 @@ void paired_end_id_to_pos_compression(const std::vector<uint64_t>& id_to_pos, ui
                     PPMD7_CODER, 3, 3, 1);
 
     std::ofstream not_base_pair_pos_file(working_path / "not_base_pair_pos.bin");
-    PgSAHelpers::writeArray(not_base_pair_pos_file, notBasePairPos.data(), notBasePairPos.size() * sizeof(uint_pg_len));
+    PgSAHelpers::writeArray(not_base_pair_pos_file, notBasePairPos.data(), notBasePairPos.size() * sizeof(RefLenType));
     lzma2::lzma2_compress((working_path / "not_base_pair_pos.bin").c_str(), (working_path / "not_base_pair_pos.lzma2").c_str(), level, t_num);
     read_file_and_output(working_path / "not_base_pair_pos.lzma2");
+}
+
+void paired_end_reads_order_compress(const std::vector<uint32_t>& pe_reads_order, std::ofstream& out, const fs::path& working_path, int level, int t_num) {
+    auto read_file_and_output = [&](const fs::path &filename) {
+        std::vector<uint8_t> data;
+        read_vector_from_binary_file(data, filename);
+        uint64_t size = data.size();
+        out.write(reinterpret_cast<const char*>(&size), sizeof (uint64_t));
+        PgSAHelpers::writeArray(out, data.data(), size);
+    };
+
+    std::vector<uint8_t> offsetPairFlag;
+    std::vector<uint8_t> nonOffsetPairFlag;
+    std::vector<uint8_t> offsetInUint8Flag;
+    std::vector<uint8_t> offsetInUint8Value;
+    std::vector<uint8_t> deltaInInt8Flag;
+    std::vector<int8_t>  deltaInInt8Value;
+    std::vector<uint32_t> offset;
+    offsetPairFlag.reserve(pe_reads_order.size() / 2);
+    nonOffsetPairFlag.reserve(pe_reads_order.size() / 4);
+    offsetInUint8Flag.reserve(pe_reads_order.size() / 2);
+    offsetInUint8Value.reserve(pe_reads_order.size() / 2);
+    deltaInInt8Flag.reserve(pe_reads_order.size() / 4);
+    deltaInInt8Value.reserve(pe_reads_order.size() / 8);
+
+    std::vector<bool> visit(pe_reads_order.size(), false);
+    std::vector<uint32_t> pe_reads_order_index(pe_reads_order.size());
+    for (uint32_t i = 0; i < pe_reads_order.size(); ++i) {
+        pe_reads_order_index[pe_reads_order[i]] = i;
+    }
+    int64_t ref_prev_offset = 0;
+    int64_t prev_offset = 0;
+    bool match = false;
+    for (uint32_t order_index = 0; order_index < pe_reads_order.size(); ++order_index) {
+        if (visit[order_index]) continue;
+        uint32_t order = pe_reads_order[order_index];
+        uint32_t pair_order = order % 2 ? (order - 1) : (order + 1);
+        uint32_t pair_order_index = pe_reads_order_index[pair_order];
+        visit[pair_order_index] = true;
+        int64_t pair_index_offset = pair_order_index - order_index;
+        offsetInUint8Flag.push_back((uint8_t)(pair_index_offset <= UINT8_MAX));
+        if (pair_index_offset <= UINT8_MAX) {
+            offsetInUint8Value.push_back((uint8_t) pair_index_offset);
+            offsetPairFlag.push_back(order % 2);
+            continue;
+        }
+        nonOffsetPairFlag.push_back(order % 2);
+        const int64_t delta = pair_index_offset - ref_prev_offset;
+        const bool isDeltaInInt8 = INT8_MIN <= delta && delta <= INT8_MAX;
+        deltaInInt8Flag.push_back((uint8_t) isDeltaInInt8);
+        if (isDeltaInInt8) {
+            match = true;
+            deltaInInt8Value.push_back((int8_t) delta);
+            ref_prev_offset = pair_index_offset;
+        } else {
+            if (!match || ref_prev_offset != prev_offset) {
+                ref_prev_offset = pair_index_offset;
+            }
+            offset.push_back(pair_index_offset);
+            match = false;
+        }
+        prev_offset = pair_index_offset;
+    }
+    writeCompressed(out, (char*) offsetInUint8Flag.data(), offsetInUint8Flag.size() * sizeof(uint8_t),
+                    PPMD7_CODER, 3, 3, COMPRESSION_ESTIMATION_UINT8_BITMAP);
+    writeCompressed(out, (char*) offsetInUint8Value.data(), offsetInUint8Value.size() * sizeof(uint8_t),
+                    PPMD7_CODER, 3, 2, 1);
+    writeCompressed(out, (char*) deltaInInt8Flag.data(), deltaInInt8Flag.size() * sizeof(uint8_t),
+                    PPMD7_CODER, 3, 3, COMPRESSION_ESTIMATION_UINT8_BITMAP);
+    writeCompressed(out, (char*) offsetPairFlag.data(), offsetPairFlag.size() * sizeof(uint8_t),
+                    PPMD7_CODER, 3, 2, COMPRESSION_ESTIMATION_UINT8_BITMAP);
+    writeCompressed(out, (char*) nonOffsetPairFlag.data(), nonOffsetPairFlag.size() * sizeof(uint8_t),
+                    PPMD7_CODER, 3, 2, COMPRESSION_ESTIMATION_UINT8_BITMAP);
+
+    std::ofstream delta_file(working_path / "delta.bin");
+    PgSAHelpers::writeArray(delta_file, deltaInInt8Value.data(), deltaInInt8Value.size() * sizeof(int8_t));
+    lzma2::lzma2_compress((working_path / "delta.bin").c_str(), (working_path / "delta.lzma2").c_str(), level, t_num);
+    read_file_and_output(working_path / "delta.lzma2");
+
+    std::ofstream offset_file(working_path / "offset.bin");
+    PgSAHelpers::writeArray(offset_file, offset.data(), offset.size() * sizeof(uint32_t));
+    lzma2::lzma2_compress((working_path / "offset.bin").c_str(), (working_path / "offset.lzma2").c_str(), level, t_num);
+    read_file_and_output(working_path / "offset.lzma2");
 }
 
 static inline void bsc_compress(const char *input, const char *output) {

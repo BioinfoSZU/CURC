@@ -15,6 +15,7 @@ struct Param {
     uint8_t is_preserve_order;
     uint8_t is_paired_end;
     uint16_t read_len;
+    size_t read_unit_size;
     double reads_data_ratio;
 
     // error-free match argument

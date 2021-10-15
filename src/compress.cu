@@ -34,14 +34,14 @@ struct AlignmentRecord {
        : read_id(read_id), is_contain_N(is_contain_N), strand_id(strand_id), pos(pos) {}
 };
 
-template<size_t read_unit_size>
+// template<size_t read_unit_size>
 struct RefRecord {
     std::vector<AlignmentRecord> record;
     std::string ref_string;
     uint64_t * binary_ref_string = nullptr;
     size_t binary_ref_size = 0;
 
-    void check_binary_ref(const uint64_t * reads_db, size_t reads_count, size_t read_len) {
+    void check_binary_ref(const uint64_t * reads_db, size_t reads_count, size_t read_len, size_t read_unit_size) {
         std::vector<bool> had_access(reads_count, false);
         for (size_t i = 0; i < record.size(); ++i) {
             uint32_t read_id = record[i].read_id;
@@ -71,7 +71,8 @@ struct RefRecord {
             const uint32_t * prev,
             const uint16_t * offset,
             size_t reads_count,
-            size_t read_len) {
+            size_t read_len,
+            size_t read_unit_size) {
         std::vector<bool> visit(reads_count, false);
         for (uint32_t r = 0; r < ref_reads_count; ++r) {
             auto read_id = ref_reads_id[r];
@@ -223,7 +224,7 @@ struct RefRecord {
     }
 };
 
-template<size_t read_unit_size>
+// template<size_t read_unit_size>
 struct ReadMapper {
 private:
     int device_id;
@@ -250,6 +251,7 @@ public:
     void init(const uint64_t * reads_db_host,  const char* N_reads_db_host, const uint32_t * unmatch_reads_id,
               const uint64_t * binary_ref, size_t binary_ref_size) {
         cudaSetDevice(device_id);
+        size_t read_unit_size = param.read_unit_size;
         uint64_t * reads_db_buffer;
         cudaMallocHost((void**) &reads_db_buffer, unmatch_reads_count * read_unit_size * sizeof(uint64_t));
 #pragma omp parallel for
@@ -370,7 +372,7 @@ public:
                                  [last_mismatch_count = last_mismatch_count, matches = matches,
                                  ref = ref, reads_db = reads_db, N_reads_db = N_reads_db,
                                  key_ranges = key_ranges, pos_array = pos_array, hash_size_minus_one = hash_size_minus_one,
-                                 read_len = param.read_len, ref_len = ref_len,
+                                 read_len = param.read_len, read_unit_size = param.read_unit_size, ref_len = ref_len,
                                  k, step, read_index_step, index_start_pos, target_mismatch_count] __device__(uint32_t i) {
                              if (last_mismatch_count[i] <= target_mismatch_count) return;
                              uint64_t is_contain_N = matches[i].is_contain_N;
@@ -797,8 +799,8 @@ public:
                          });
     }
 
-    template<size_t read_unit_size>
-    void match(RefRecord<read_unit_size> * dest_ref, std::string& MapOff, std::string& MapLen, bool dest_contain_N, bool dest_is_ref) {
+    // template<size_t read_unit_size>
+    void match(RefRecord * dest_ref, std::string& MapOff, std::string& MapLen, bool dest_contain_N, bool dest_is_ref) {
         cudaSetDevice(device_id);
         // auto dest_ref_size = dest_ref->ref_string.size();
         MatchResult * matches, * matches_host;
@@ -934,7 +936,7 @@ public:
 //    }
 };
 
-template<size_t read_unit_size>
+// template<size_t read_unit_size>
 void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * suffix_reads_id, uint32_t cnt,
                     uint32_t * next, uint32_t * prev, uint16_t * offset, const Param& param, int device_id) {
     cudaSetDevice(device_id);
@@ -944,6 +946,7 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
     alphabet[0] = 'A'; alphabet[1] = 'C'; alphabet[2] = 'G'; alphabet[3] = 'T';
 
     auto read_len = param.read_len;
+    auto read_unit_size = param.read_unit_size;
     for (int off = 1; off < read_len; ++off) {
         thrust::device_vector<uint32_t> suffix_sort_part(alphabet_size);
         thrust::lower_bound(thrust::device,
@@ -1107,10 +1110,10 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
     }
 }
 
-template<size_t read_unit_size>
+// template<size_t read_unit_size>
 void full_match_cpu(const char* N_reads_db_host, uint32_t * unmapping_N_reads_id,
                     uint32_t unmapping_N_reads_count, size_t N_reads_count,
-                    const Param& param, RefRecord<read_unit_size> * ref_ptr) {
+                    const Param& param, RefRecord * ref_ptr) {
     __gnu_parallel::sort(unmapping_N_reads_id, unmapping_N_reads_id + unmapping_N_reads_count, [&](auto a, auto b) {
         int ret = std::memcmp(N_reads_db_host + a * param.read_len, N_reads_db_host + b * param.read_len, param.read_len);
         return ret < 0;
@@ -1281,7 +1284,7 @@ void full_match_cpu(const char* N_reads_db_host, uint32_t * unmapping_N_reads_id
     ref_ptr->assembly(N_reads_db_host, unmapping_N_reads_id, unmapping_N_reads_count, next.data(), prev.data(), offset.data(), N_reads_count, param.read_len);
 }
 
-template<size_t read_unit_size>
+// template<size_t read_unit_size>
 void block_compress(const uint64_t * reads_db_host,
                     std::vector<uint32_t> reads_id,
                     std::vector<char> N_reads_db_host,
@@ -1289,6 +1292,7 @@ void block_compress(const uint64_t * reads_db_host,
                     const Param& param,
                     uint8_t block_id,
                     int device_count) {
+    size_t read_unit_size = param.read_unit_size;
     fs::path working_path = fs::path(param.working_parent_path) / fs::path(std::to_string(block_id));
     if (!fs::exists(working_path)) {
         fs::create_directories(working_path);
@@ -1297,7 +1301,8 @@ void block_compress(const uint64_t * reads_db_host,
         fs::create_directories(working_path);
     }
     std::ofstream output_file(fs::path(param.working_dir) / (std::to_string(block_id) + block_archive_name_suffix));
-    size_t reads_count = reads_id.size() + N_reads_id.size();
+    uint32_t reads_count = reads_id.size() + N_reads_id.size();
+    output_file.write(reinterpret_cast<const char*>(&reads_count), sizeof(uint32_t));
     cudaHostRegister(reads_id.data(), reads_id.size() * sizeof(uint32_t), cudaHostRegisterPortable);
     cudaHostRegister(N_reads_db_host.data(), N_reads_db_host.size() * sizeof(char), cudaHostRegisterPortable);
     int device_id;
@@ -1328,7 +1333,7 @@ void block_compress(const uint64_t * reads_db_host,
         thrust::uninitialized_fill(thrust::device, offset, offset + reads_count, INVALOFF);
 
         thrust::sort(thrust::device, reads_id_device, reads_id_device + reads_id.size(),
-                     [reads_db_device] __device__ (uint32_t a, uint32_t b) {
+                     [reads_db_device, read_unit_size] __device__ (uint32_t a, uint32_t b) {
             for (size_t i = 0; i < read_unit_size; ++i) {
                 if (reads_db_device[a * read_unit_size + i] < reads_db_device[b * read_unit_size + i]) return true;
                 if (reads_db_device[a * read_unit_size + i] > reads_db_device[b * read_unit_size + i]) return false;
@@ -1339,7 +1344,7 @@ void block_compress(const uint64_t * reads_db_host,
         thrust::for_each(thrust::device,
                          thrust::counting_iterator<uint32_t>(0),
                          thrust::counting_iterator<uint32_t>(reads_id.size() - 1),
-                [reads_db_device, reads_id_device, next, prev, offset] __device__ (uint32_t i) {
+                [reads_db_device, reads_id_device, next, prev, offset, read_unit_size] __device__ (uint32_t i) {
             for (size_t j = 0; j < read_unit_size; ++j) {
                 if (reads_db_device[reads_id_device[i] * read_unit_size + j] !=
                     reads_db_device[reads_id_device[i + 1] * read_unit_size + j]) return;
@@ -1378,7 +1383,7 @@ void block_compress(const uint64_t * reads_db_host,
             thrust::for_each(thrust::device,
                              thrust::counting_iterator<uint32_t>(0),
                              thrust::counting_iterator<uint32_t>(prefix_reads_count),
-                             [reads_db_device, value_array, hash_key_array, kmer_index_pos, kmer_size, hash_size_minus_one]
+                             [reads_db_device, value_array, hash_key_array, kmer_index_pos, kmer_size, hash_size_minus_one, read_unit_size]
                              __device__(uint32_t i) {
                                  uint64_t kmer = extract_word_gpu(reads_db_device, value_array[i] * read_unit_size, kmer_index_pos, kmer_size);
                                  hash_key_array[i] = murmur_hash64(kmer) & hash_size_minus_one;
@@ -1408,7 +1413,7 @@ void block_compress(const uint64_t * reads_db_host,
                                      uint32_t hash_value_start = key_range[kmer_hash], hash_value_end = key_range[kmer_hash + 1];
                                      size_t compare_len = read_len - off;
                                      uint32_t count = hash_value_end - hash_value_start;
-                                     auto comp = [compare_len, reads_db_device, off] __device__ (uint32_t prefix_idx, uint32_t suffix_idx) {
+                                     auto comp = [compare_len, reads_db_device, off, read_unit_size] __device__ (uint32_t prefix_idx, uint32_t suffix_idx) {
                                          for (size_t j = 0; j < compare_len; j += 32) {
                                              auto base_number = thrust::min(32ul, compare_len - j);
                                              auto prefix = extract_word_gpu(reads_db_device, prefix_idx * read_unit_size, j, base_number);
@@ -1513,7 +1518,7 @@ void block_compress(const uint64_t * reads_db_host,
             thrust::copy_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count, suffix_reads_id,
                             [next] __device__ (uint32_t id) { return next[id] == INVALID; });
 
-            full_match_gpu<read_unit_size>(reads_db_device, prefix_reads_id, suffix_reads_id, suffix_reads_count,
+            full_match_gpu(reads_db_device, prefix_reads_id, suffix_reads_id, suffix_reads_count,
                                            next, prev, offset, param, device_id);
             cudaFree(prefix_reads_id);
             cudaFree(suffix_reads_id);
@@ -1537,8 +1542,8 @@ void block_compress(const uint64_t * reads_db_host,
     reads_id.clear();
     reads_id.shrink_to_fit();
 
-    auto ref = std::make_unique<RefRecord<read_unit_size>>();
-    ref->assembly(reads_db_host, ref_reads_id_host, ref_reads_count, next_host, prev_host, offset_host, reads_count, param.read_len);
+    auto ref = std::make_unique<RefRecord>();
+    ref->assembly(reads_db_host, ref_reads_id_host, ref_reads_count, next_host, prev_host, offset_host, reads_count, param.read_len, param.read_unit_size);
     ref->allocate_binary_ref();
     ref->compute_binary_ref();
     cudaFreeHost(next_host);
@@ -1553,7 +1558,7 @@ void block_compress(const uint64_t * reads_db_host,
     LOCK_START
     {
         cudaSetDevice(device_id);
-        ReadMapper<read_unit_size> read_mapper(device_id, ref->ref_string.size(), unmatch_reads_count, N_reads_id.size(), param);
+        ReadMapper read_mapper(device_id, ref->ref_string.size(), unmatch_reads_count, N_reads_id.size(), param);
         read_mapper.init(reads_db_host, N_reads_db_host.data(), unmatch_reads_id_host, ref->binary_ref_string, ref->binary_ref_size);
         read_mapper.template index_and_mapping<false>(Param::k1, Param::ref_index_step1, Param::bucket_limit, Param::read_index_step1, Param::target_mismatch_count1);
         read_mapper.template index_and_mapping<true>(Param::k1, Param::ref_index_step1, Param::bucket_limit, Param::read_index_step1, Param::target_mismatch_count1);
@@ -1564,8 +1569,8 @@ void block_compress(const uint64_t * reads_db_host,
     LOCK_END
     cudaHostUnregister(N_reads_db_host.data());
 
-    auto unmapping_ref = std::make_unique<RefRecord<read_unit_size>>();
-    auto unmapping_N_ref = std::make_unique<RefRecord<read_unit_size>>();
+    auto unmapping_ref = std::make_unique<RefRecord>();
+    auto unmapping_N_ref = std::make_unique<RefRecord>();
 
     auto unmapping_ref_construct = std::async(std::launch::async, [&] {
         if (unmapping_reads_count == 0) return;
@@ -1604,7 +1609,7 @@ void block_compress(const uint64_t * reads_db_host,
             }
             cudaMemcpy(reads_db, reads_db_buffer, unmapping_reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-            full_match_gpu<read_unit_size>(reads_db, prefix_reads_id, suffix_reads_id, unmapping_reads_count,
+            full_match_gpu(reads_db, prefix_reads_id, suffix_reads_id, unmapping_reads_count,
                                            next_device, prev_device, offset_device, param, device_id);
 
             cudaMallocHost((void**) &prev_host, unmapping_reads_count * sizeof(uint32_t));
@@ -1625,7 +1630,7 @@ void block_compress(const uint64_t * reads_db_host,
 
         std::vector<uint32_t> unmapping_ref_reads_id(unmapping_reads_count);
         std::iota(unmapping_ref_reads_id.begin(), unmapping_ref_reads_id.end(), 0);
-        unmapping_ref->assembly(reads_db_buffer, unmapping_ref_reads_id.data(), unmapping_reads_count, next_host, prev_host, offset_host, unmapping_reads_count, param.read_len);
+        unmapping_ref->assembly(reads_db_buffer, unmapping_ref_reads_id.data(), unmapping_reads_count, next_host, prev_host, offset_host, unmapping_reads_count, param.read_len, param.read_unit_size);
         cudaFreeHost(reads_db_buffer);
         cudaFreeHost(next_host);
         cudaFreeHost(prev_host);
@@ -1641,14 +1646,15 @@ void block_compress(const uint64_t * reads_db_host,
 
     auto unmapping_N_ref_construct = std::async(std::launch::async, [&] {
         if (unmapping_N_reads_count == 0) return ;
-        full_match_cpu<read_unit_size>(N_reads_db_host.data(), unmapping_N_reads_id, unmapping_N_reads_count, N_reads_id.size(), param, unmapping_N_ref.get());
+        full_match_cpu(N_reads_db_host.data(), unmapping_N_reads_id, unmapping_N_reads_count, N_reads_id.size(), param, unmapping_N_ref.get());
         cudaFreeHost(unmapping_N_reads_id);
     });
 
     std::vector<uint64_t> id_to_pos;
     if (param.is_preserve_order) id_to_pos.resize(reads_count);
-    std::string pe_flag;
-    if (!param.is_preserve_order && param.is_paired_end) pe_flag.reserve(reads_count);
+    // std::string pe_flag;
+    std::vector<uint32_t> pe_reads_order;
+    if (!param.is_preserve_order && param.is_paired_end) pe_reads_order.reserve(reads_count); // pe_flag.reserve(reads_count);
     {
         auto & record = ref->record;
         auto record_size = record.size();
@@ -1699,9 +1705,11 @@ void block_compress(const uint64_t * reads_db_host,
             } else {
                 if (param.is_paired_end) {
                     if (is_contain_N) {
-                        pe_flag += (char) ((uint32_t)'0' + N_reads_id[read_id] % 2);
+                        // pe_flag += (char) ((uint32_t)'0' + N_reads_id[read_id] % 2);
+                        pe_reads_order.push_back(N_reads_id[read_id]);
                     } else {
-                        pe_flag += (char) ((uint32_t)'0' + read_id % 2);
+                        // pe_flag += (char) ((uint32_t)'0' + read_id % 2);
+                        pe_reads_order.push_back(read_id);
                     }
                 }
                 reads_off_stream.push_back(pos - last_pos);
@@ -1859,7 +1867,8 @@ void block_compress(const uint64_t * reads_db_host,
         for (size_t i = 0; i < unmapping_ref->record.size(); ++i) {
             uint32_t read_id = unmapping_ref->record[i].read_id ;
             if (param.is_paired_end) {
-                pe_flag += (char)((uint32_t)'0' + read_id % 2);
+                // pe_flag += (char)((uint32_t)'0' + read_id % 2);
+                pe_reads_order.push_back(read_id);
             }
             reads_off_stream.push_back(param.read_len - (unmapping_ref->record[i].pos - last_pos));
             last_pos = unmapping_ref->record[i].pos;
@@ -1879,7 +1888,8 @@ void block_compress(const uint64_t * reads_db_host,
         for (size_t i = 0; i < unmapping_N_ref->record.size(); ++i) {
             uint32_t read_id = unmapping_N_ref->record[i].read_id;
             if (param.is_paired_end) {
-                pe_flag += (char)((uint32_t)'0' + N_reads_id[read_id] % 2);
+                // pe_flag += (char)((uint32_t)'0' + N_reads_id[read_id] % 2);
+                pe_reads_order.push_back(N_reads_id[read_id]);
             }
             N_reads_off_stream.push_back(param.read_len - (unmapping_N_ref->record[i].pos - last_pos));
             last_pos = unmapping_N_ref->record[i].pos;
@@ -1892,17 +1902,25 @@ void block_compress(const uint64_t * reads_db_host,
         }
     }
 
-    if (!param.is_preserve_order && param.is_paired_end) {
-        {
-            std::ofstream pe_flag_txt(working_path / "pe_flag.txt");
-            pe_flag_txt << pe_flag;
+    auto pe_reads_order_compress_future = std::async(std::launch::async, [&] {
+        if (!param.is_preserve_order && param.is_paired_end) {
+            std::ofstream pe_reads_order_comp(working_path / "pe_order.comp");
+            paired_end_reads_order_compress(pe_reads_order, pe_reads_order_comp, working_path, param.flzma2_level, param.flzma2_thread_num);
+            pe_reads_order.clear();
+            pe_reads_order.shrink_to_fit();
+
+//            {
+//                std::ofstream pe_flag_txt(working_path / "pe_flag.txt");
+//                pe_flag_txt << pe_flag;
+//            }
+//            {
+//                bsc_compress((working_path / "pe_flag.txt").c_str(), (working_path / "pe_flag.bsc").c_str());
+//                fs::remove(working_path / "pe_flag.txt");
+//                pe_flag.clear();
+//                pe_flag.shrink_to_fit();
+//            }
         }
-        {
-            bsc_compress((working_path / "pe_flag.txt").c_str(), (working_path / "pe_flag.bsc").c_str());
-            fs::remove(working_path / "pe_flag.txt");
-            pe_flag.clear(); pe_flag.shrink_to_fit();
-        }
-    }
+    });
 
     uint64_t joinedRefLength = (ref->ref_string.size() + unmapping_ref->ref_string.size() + unmapping_N_ref->ref_string.size());
     uint8_t isJoinRefLengthStd = joinedRefLength <= UINT32_MAX;
@@ -1923,9 +1941,9 @@ void block_compress(const uint64_t * reads_db_host,
             } else {
                 std::ofstream id_pos_comp(working_path / "id_pos.comp");
                 if (isJoinRefLengthStd) {
-                    paired_end_id_to_pos_compression<uint32_t>(id_to_pos, joinedRefLength, id_pos_comp, working_path, param.flzma2_level, param.flzma2_thread_num);
+                    paired_end_id_to_pos_compression<uint32_t>(id_to_pos, id_pos_comp, working_path, param.flzma2_level, param.flzma2_thread_num);
                 } else {
-                    paired_end_id_to_pos_compression<uint64_t>(id_to_pos, joinedRefLength, id_pos_comp, working_path, param.flzma2_level, param.flzma2_thread_num);
+                    paired_end_id_to_pos_compression<uint64_t>(id_to_pos, id_pos_comp, working_path, param.flzma2_level, param.flzma2_thread_num);
                 }
             }
             id_to_pos.clear();
@@ -1946,12 +1964,12 @@ void block_compress(const uint64_t * reads_db_host,
             RefMatcher matcher(ref->ref_string.size(), device_id, param);
             matcher.init(ref->binary_ref_string, ref->binary_ref_size);
             if (!unmapping_ref->ref_string.empty()) {
-                matcher.template match(unmapping_ref.get(), unmapRefMapOff, unmapRefMapLen, false, false);
+                matcher.match(unmapping_ref.get(), unmapRefMapOff, unmapRefMapLen, false, false);
             }
             if (!unmapping_N_ref->ref_string.empty()) {
-                matcher.template match(unmapping_N_ref.get(), unmapNRefMapOff, unmapNRefMapLen, true, false);
+                matcher.match(unmapping_N_ref.get(), unmapNRefMapOff, unmapNRefMapLen, true, false);
             }
-            matcher.template match(ref.get(), refMapOff, refMapLen, false, true);
+            matcher.match(ref.get(), refMapOff, refMapLen, false, true);
             // matcher.finish_match();
         }
         LOCK_END
@@ -2005,6 +2023,7 @@ void block_compress(const uint64_t * reads_db_host,
         output_file.write(reinterpret_cast<const char*>(data.data()), size);
     };
 
+    pe_reads_order_compress_future.get();
     id_to_pos_compress_future.get();
     if (param.is_preserve_order) {
         read_file_and_output(working_path / "id_pos.comp");
@@ -2016,7 +2035,8 @@ void block_compress(const uint64_t * reads_db_host,
         read_file_and_output(working_path / "unmapping_N_read_off.lzma");
         read_file_and_output(working_path / "unmapping_read_off.lzma");
         if (param.is_paired_end) {
-            read_file_and_output(working_path / "pe_flag.bsc");
+            // read_file_and_output(working_path / "pe_flag.bsc");
+            read_file_and_output(working_path / "pe_order.comp");
         }
     }
     read_file_and_output(working_path / "ref_off.map.lzma");
@@ -2034,7 +2054,7 @@ void block_compress(const uint64_t * reads_db_host,
 
 }
 
-template<size_t read_unit_size>
+// template<size_t read_unit_size>
 void process(const Param& param) {
     int device_count;
     gpuErrorCheck(cudaGetDeviceCount(&device_count));
@@ -2055,14 +2075,14 @@ void process(const Param& param) {
     if (!param.is_paired_end) {
         fastq_bytes = fs::file_size(param.f1_path);
         block_bytes = (size_t)((double) fastq_bytes * param.block_ratio);
-        reads_db_host_capacity = (double) fastq_bytes * param.reads_data_ratio / param.read_len * read_unit_size * sizeof(uint64_t);
+        reads_db_host_capacity = (double) fastq_bytes * param.reads_data_ratio / param.read_len * param.read_unit_size * sizeof(uint64_t);
         printf("reads_db_host_capacity : %zu bytes\n", reads_db_host_capacity);
         cudaHostAlloc((void **) &reads_db_host, reads_db_host_capacity, cudaHostAllocPortable);
     } else {
         fastq_bytes = fs::file_size(param.f1_path);
         if (fastq_bytes != fs::file_size(param.f2_path)) throw std::runtime_error("paired-end file size isn't equal");
         block_bytes = (size_t)(2 * (double) fastq_bytes * param.block_ratio);
-        reads_db_host_capacity = 2 * (double) fastq_bytes * param.reads_data_ratio / param.read_len * read_unit_size * sizeof(uint64_t);
+        reads_db_host_capacity = 2 * (double) fastq_bytes * param.reads_data_ratio / param.read_len * param.read_unit_size * sizeof(uint64_t);
         printf("reads_db_host_capacity : %zu bytes\n", reads_db_host_capacity);
         cudaHostAlloc((void **) &reads_db_host, reads_db_host_capacity, cudaHostAllocPortable);
     }
@@ -2070,7 +2090,7 @@ void process(const Param& param) {
     std::vector<std::future<void>> block_compress_future;
     {
         cudaSetDevice(0);
-        auto encode = [reads_db_host](char * buffer, uint8_t * contain_N_flags, const Param& param, size_t buffer_reads_count, size_t start_read_index) {
+        auto encode = [reads_db_host, read_unit_size = param.read_unit_size](char * buffer, uint8_t * contain_N_flags, const Param& param, size_t buffer_reads_count, size_t start_read_index) {
             cudaSetDevice(0);
             uint16_t read_len = param.read_len;
             uint64_t * binary_reads_buffer;
@@ -2078,7 +2098,7 @@ void process(const Param& param) {
             thrust::for_each(thrust::device,
                              thrust::counting_iterator<uint32_t>(0),
                              thrust::counting_iterator<uint32_t>(buffer_reads_count),
-                             [buffer, contain_N_flags, binary_reads_buffer, read_len] __device__ (uint32_t i) {
+                             [buffer, contain_N_flags, binary_reads_buffer, read_len, read_unit_size = param.read_unit_size] __device__ (uint32_t i) {
                                  if (contain_N_flags[i]) return;
                                  uint64_t idx1 = 0, c;
                                  uint8_t idx2 = 0;
@@ -2205,7 +2225,7 @@ void process(const Param& param) {
             cudaMemcpy(buffer_contain_N_flags_device, buffer_contain_N_flags, buffer_reads_count * sizeof(uint8_t), cudaMemcpyHostToDevice);
             encode_futures.push_back(std::async(std::launch::async, encode, reads_db_buffer_device, buffer_contain_N_flags_device, param, buffer_reads_count, reads_count));
             reads_count += buffer_reads_count;
-            if (reads_count * read_unit_size * sizeof(uint64_t) >= reads_db_host_capacity) {
+            if (reads_count * param.read_unit_size * sizeof(uint64_t) >= reads_db_host_capacity) {
                 throw std::runtime_error("reads_db_host overflow");
             }
 
@@ -2214,8 +2234,8 @@ void process(const Param& param) {
             if (block_read_bytes > block_bytes) {
                 for (auto & f : encode_futures) f.get(); // force encode finish
                 encode_futures.clear();
-                block_compress_future.push_back(std::async(std::launch::async, block_compress<read_unit_size>,
-                        reads_db_host + last_reads_count * read_unit_size, std::move(reads_id),
+                block_compress_future.push_back(std::async(std::launch::async, block_compress,
+                        reads_db_host + last_reads_count * param.read_unit_size, std::move(reads_id),
                         std::move(N_reads_db_host), std::move(N_reads_id), param, blocks_count++, device_count));
                 if (blocks_count >= UINT8_MAX) {
                     throw std::runtime_error("too many blocks");
@@ -2229,8 +2249,8 @@ void process(const Param& param) {
         if (block_read_bytes > 0) {
             for (auto & f : encode_futures) f.get();
             encode_futures.clear();
-            block_compress_future.push_back(std::async(std::launch::async, block_compress<read_unit_size>,
-                                                       reads_db_host + last_reads_count * read_unit_size, std::move(reads_id),
+            block_compress_future.push_back(std::async(std::launch::async, block_compress,
+                                                       reads_db_host + last_reads_count * param.read_unit_size, std::move(reads_id),
                                                        std::move(N_reads_db_host), std::move(N_reads_id), param, blocks_count++, device_count));
             if (blocks_count >= UINT8_MAX) {
                 throw std::runtime_error("too many blocks");
@@ -2273,7 +2293,7 @@ void process(const Param& param) {
 }
 
 void compress(Param& param) {
-    size_t read_unit_size = 0;
+    // size_t read_unit_size = 0;
     {
         size_t total_size = 0;
         std::ifstream input_fastq(param.f1_path);
@@ -2283,7 +2303,7 @@ void compress(Param& param) {
         std::getline(input_fastq, line);
         total_size += line.size();
         param.read_len = line.size();
-        read_unit_size = ceil<32>(param.read_len);
+        param.read_unit_size = ceil<32>(param.read_len);
         std::getline(input_fastq, line);
         total_size += line.size();
         std::getline(input_fastq, line);
@@ -2301,58 +2321,64 @@ void compress(Param& param) {
     param.kmer_index_pos = param.read_len - param.kmer_size - param.max_off;
     param.max_mismatch_count = param.read_len / 6;
 
-    switch(read_unit_size) {
-        case 1: // <= 32 bases
-            process<1>(param);
-            break;
-        case 2: // <= 64 bases
-            process<2>(param);
-            break;
-        case 3: // <= 96 bases
-            process<3>(param);
-            break;
-        case 4: // <= 128 bases
-            process<4>(param);
-            break;
-        case 5: // <= 160 bases
-            process<5>(param);
-            break;
-        case 6: // <= 192 bases
-            process<6>(param);
-            break;
-        case 7: // <= 224 bases
-            process<7>(param);
-            break;
-        case 8: // <= 256 bases
-            process<8>(param);
-            break;
-        case 9: // <= 288 bases
-            process<9>(param);
-            break;
-        case 10: // <= 320 bases
-            process<10>(param);
-            break;
-        case 11: // <= 352 bases
-            process<11>(param);
-            break;
-        case 12: // <= 384 bases
-            process<12>(param);
-            break;
-        case 13: // <= 416 bases
-            process<13>(param);
-            break;
-        case 14: // <= 448 bases
-            process<14>(param);
-            break;
-        case 15: // <= 480 bases
-            process<15>(param);
-            break;
-        case 16: // <= 512 bases
-            process<16>(param);
-            break;
-        default:
-            printf("Read length must be less than 512");
-            break;
+    if (param.read_unit_size > 16) {
+        printf("Read length must be less than 512");
+        std::exit(0);
     }
+    process(param);
+
+//    switch(read_unit_size) {
+//        case 1: // <= 32 bases
+//            process<1>(param);
+//            break;
+//        case 2: // <= 64 bases
+//            process<2>(param);
+//            break;
+//        case 3: // <= 96 bases
+//            process<3>(param);
+//            break;
+//        case 4: // <= 128 bases
+//            process<4>(param);
+//            break;
+//        case 5: // <= 160 bases
+//            process<5>(param);
+//            break;
+//        case 6: // <= 192 bases
+//            process<6>(param);
+//            break;
+//        case 7: // <= 224 bases
+//            process<7>(param);
+//            break;
+//        case 8: // <= 256 bases
+//            process<8>(param);
+//            break;
+//        case 9: // <= 288 bases
+//            process<9>(param);
+//            break;
+//        case 10: // <= 320 bases
+//            process<10>(param);
+//            break;
+//        case 11: // <= 352 bases
+//            process<11>(param);
+//            break;
+//        case 12: // <= 384 bases
+//            process<12>(param);
+//            break;
+//        case 13: // <= 416 bases
+//            process<13>(param);
+//            break;
+//        case 14: // <= 448 bases
+//            process<14>(param);
+//            break;
+//        case 15: // <= 480 bases
+//            process<15>(param);
+//            break;
+//        case 16: // <= 512 bases
+//            process<16>(param);
+//            break;
+//        default:
+//            printf("Read length must be less than 512");
+//            break;
+//    }
 }
 
