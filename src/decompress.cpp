@@ -602,6 +602,7 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
             }
         } else {
             auto inclusive_scan = [read_len] (std::vector<uint64_t>& sum, const std::vector<uint16_t>& value, bool is_complement_off) {
+                if (value.empty()) return;
                 if (!is_complement_off) {
                     sum[0] = value[0];
                     for (size_t i = 1; i < sum.size(); ++i) sum[i] = sum[i - 1] + value[i];
