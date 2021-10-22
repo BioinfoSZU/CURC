@@ -70,7 +70,7 @@ static inline uint64_t extract_word_cpu(const uint64_t * bits, uint32_t start_in
     uint64_t offset1 = off >> 5ULL;
     uint32_t offset2 = (off & 0x1FULL) << 1ULL;
     uint64_t left_part = bits[start_index + offset1] << offset2;
-    if ((64ULL - offset2) >= (base_number << 1ULL)) return left_part >> ((32ULL - base_number) << 1ULL); // 某些情况下只需要左部分就能得到结果,避免下一步越界
+    if ((64ULL - offset2) >= (base_number << 1ULL)) return left_part >> ((32ULL - base_number) << 1ULL);
     uint64_t right_part = (bits[start_index + offset1 + 1] >> (62ULL - offset2)) >> 2ULL;
     uint64_t kmer_right_shift = (32ULL - base_number) << 1ULL;
     return (left_part | right_part) >> kmer_right_shift;
@@ -139,7 +139,7 @@ __device__ __forceinline__ uint64_t extract_word_gpu(const uint64_t * bits, uint
     uint64_t offset1 = off >> 5ULL;
     uint32_t offset2 = (off & 0x1FULL) << 1ULL;
     uint64_t left_part = bits[start_index + offset1] << offset2;
-    if ((64ULL - offset2) >= (base_number << 1ULL)) return left_part >> ((32ULL - base_number) << 1ULL); // 某些情况下只需要左部分就能得到结果,避免下一步越界
+    if ((64ULL - offset2) >= (base_number << 1ULL)) return left_part >> ((32ULL - base_number) << 1ULL);
     uint64_t right_part = (bits[start_index + offset1 + 1] >> (62ULL - offset2)) >> 2ULL;
     uint64_t kmer_right_shift = (32ULL - base_number) << 1ULL;
     return (left_part | right_part) >> kmer_right_shift;
@@ -269,27 +269,27 @@ void mismatch_offset_compress(const std::vector<uint16_t> & mismatch_offset_arra
                               const std::string& suffix = ".bin") {
     std::vector<char> compressed_output;
     compressed_output.resize(mismatch_offset_array.size() * sizeof(uint16_t) + 1024);
-    char * output = compressed_output.data(); // output 开头不需要储存 mismatch_offset_array 的个数, 因为已经储存了 mismatch_count_list, 解压时可以统计出某个mismatch_count的个数.
+    char * output = compressed_output.data();
 
     RangeCoder rc{};
     rc.output(output);
     rc.StartEncode();
 
     SIMPLE_MODEL<2> flag;
-    SIMPLE_MODEL<max_read_len / 2 + 1> first_value; // 储存第一个值,范围 [0, max_read_len / 2]
-    SIMPLE_MODEL<max_read_len> value;               // 储存差分值, 范围 [0, max_read_len)
+    SIMPLE_MODEL<max_read_len / 2 + 1> first_value;
+    SIMPLE_MODEL<max_read_len> value;
 
     size_t i = 0;
     while (i < mismatch_offset_array.size()) {
-        flag.encodeSymbol(&rc, mismatch_offset_array[i++]);  // 第一个 flag 标记是从左到右差分还是从右到左差分
-        first_value.encodeSymbol(&rc, mismatch_offset_array[i++]); // 第一个值, 第一个值的范围不会超过 max_read_len / 2
+        flag.encodeSymbol(&rc, mismatch_offset_array[i++]);
+        first_value.encodeSymbol(&rc, mismatch_offset_array[i++]);
         if (mismatch_count > 1) {
             if (mismatch_count == 2) {
-                value.encodeSymbol(&rc, mismatch_offset_array[i++]); // mismatch_off[1] - mismatch_off[0] - 1
+                value.encodeSymbol(&rc, mismatch_offset_array[i++]);
             } else {
-                value.encodeSymbol(&rc, mismatch_offset_array[i++]); // min_off - 1
+                value.encodeSymbol(&rc, mismatch_offset_array[i++]);
                 for (size_t m = 1; m < mismatch_count; ++m) {
-                    value.encodeSymbol(&rc, mismatch_offset_array[i++]); // 差分值 - min_off
+                    value.encodeSymbol(&rc, mismatch_offset_array[i++]);
                 }
             }
         }

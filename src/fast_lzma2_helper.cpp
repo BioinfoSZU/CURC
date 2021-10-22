@@ -93,9 +93,6 @@ namespace lzma2 {
             exit_fail("Cannot open output file.\n");
     }
 
-    /// fast-lzma2 有 default/high 两种压缩级别, 使用 high-compression 并且将 compression-level 设置为 10
-    /// 可以得到最高压缩结果, 此时字典大小为 1024MB, 默认采用 16 个线程进行压缩, 最大可能占用 6G 内存.
-    /// PgRC使用的 lzma2(双线程) 最大可以使用1536M(3<<29)大小的字典, 某些数据集压缩率会高一点, 但速度慢很多.
     static void create_init_fl2_stream_compression(FL2_CStream **fcs, int level, int thread_num)
     {
         *fcs = FL2_createCStreamMt(thread_num, 0);
