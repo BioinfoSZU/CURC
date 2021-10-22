@@ -67,7 +67,7 @@ Paired-end order preserving mode
 [SRR554369_1_sample.fastq.gz](data/SRR554369_1_sample.fastq.gz)
 
 ### Block ratio
-The block ratio is the single block size divided by the size of the entire Fastq file.
+The block ratio is the single block size divided by the size of the entire FASTQ file.
 The default value of block_ratio is 1, which compresses the entire FASTQ in one block.
 If the GPU has enough memory (eg, 16 GB), the block size can be set to large enough (eg, 50 GB).
 If the GPU memory is small, the block size needs to be reduced to avoid out-of-memory (10-20 GB is reasonable).
