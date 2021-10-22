@@ -2,7 +2,7 @@
 
 ### Software Requirement
 - GCC >= 7.3 (support C++17 standard)
-- CMake 3.19
+- CMake >= 3.19 ([latest cmake download](https://github.com/Kitware/CMake/releases/download/v3.21.3/cmake-3.21.3-linux-x86_64.tar.gz))
 - CUDA Toolkit >= 10.1
 - OpenMP
 
