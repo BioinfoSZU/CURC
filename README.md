@@ -1,4 +1,4 @@
-## CURC - CUDA Read Sequence Compressor
+## CURC - CUDA Read Compressor
 
 ### Software Requirement
 - GCC >= 7.3 (support C++17 standard)
@@ -67,9 +67,7 @@ Paired-end order preserving mode
 [sample.fastq.gz](data/sample.fastq.gz)
 
 ### Block ratio
-The block ratio is the ratio of the single block size to the size of the entire Fastq file.
+The block ratio is the single block size divided by the size of the entire Fastq file.
 The default value of block_ratio is 1, which compresses the entire FASTQ in one block.
-If the GPU memory is large enough (eg, Tesla P100-PCI-E 16G), the block size can be set to 50-60 GB. 
-If the GPU memory is small, the block size needs to be reduced to avoid out-of-memory exceptions (can be set to about 20 GB).
-
-### Bench result
+If the GPU has enough memory (eg, 16 GB), the block size can be set to large enough (eg, 50 GB).
+If the GPU memory is small, the block size needs to be reduced to avoid out-of-memory (10-20 GB is reasonable).
