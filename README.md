@@ -1,4 +1,4 @@
-## CURC - CUDA Read Compressor
+## CURC - A CUDA-based reference-free read compressor
 
 ### Software Requirement
 - GCC >= 7.3 (support C++17 standard)
