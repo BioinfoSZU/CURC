@@ -29,7 +29,7 @@ Usage:
       --working_dir arg        working directory (default: .)
   -c, --compress               compress file
   -d, --decompress             decompress archive
-  -i, --input arg              input file path (paired-end fastq paths are 
+  -i, --input arg              input fastq path (paired-end fastq paths are 
                                separated by commas)
   -o, --output arg             output file name
       --block_ratio arg        ratio of block size (default: 1)

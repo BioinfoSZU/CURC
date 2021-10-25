@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
             ("working_dir", "working directory", cxxopts::value<std::string>()->default_value("."))
             ("c,compress", "compress file", cxxopts::value<bool>())
             ("d,decompress", "decompress archive", cxxopts::value<bool>())
-            ("i,input", "input file path (paired-end fastq paths are separated by commas)", cxxopts::value<std::vector<std::string>>())
+            ("i,input", "input fastq path (paired-end fastq paths are separated by commas)", cxxopts::value<std::vector<std::string>>())
             ("o,output", "output file name", cxxopts::value<std::string>())
             ("block_ratio", "ratio of block size", cxxopts::value<double>()->default_value("1"))
             ("flzma2_level", "fast-lzma2 compression level [1...10]", cxxopts::value<int>()->default_value("10"))
