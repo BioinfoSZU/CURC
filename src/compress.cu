@@ -1826,7 +1826,7 @@ void block_compress(const uint64_t * reads_db_host,
         mismatch_base_context_stream.clear(); mismatch_base_context_stream.shrink_to_fit();
         writeCompressed(mismatch_base_lzma, mismatch_base_stream, PPMD7_CODER, 3, 2, COMPRESSION_ESTIMATION_MIS_SYM);
         mismatch_base_stream.clear(); mismatch_base_stream.shrink_to_fit();
-        writeCompressed(mismatch_count_lzma, reinterpret_cast<const char*>(mis_cnt.data()), mis_cnt.size(), PPMD7_CODER, 3, 2, COMPRESSION_ESTIMATION_MIS_CNT);
+        writeCompressed(mismatch_count_lzma, reinterpret_cast<const char*>(mis_cnt.data()), mis_cnt.size(), PPMD7_CODER, 3, 2, 1/*COMPRESSION_ESTIMATION_MIS_CNT*/);
         mis_cnt.clear(); mis_cnt.shrink_to_fit();
         if (!param.is_preserve_order) {
             writeCompressed(read_off_lzma, reinterpret_cast<const char *>(reads_off_stream.data()), reads_off_stream.size() * 2, PPMD7_CODER, 3, 3, 1);
