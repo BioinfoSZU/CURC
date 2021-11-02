@@ -847,6 +847,12 @@ public:
 
         cudaMemcpy(&matches_size, matches_size_atomic, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
         // printf("matches result size : %llu\n", matches_size);
+        if (matches_size == 0) {
+            cudaFree(matches);
+            cudaFree(matches_size_atomic);
+            reverse_complement(dest_ref->ref_string);
+            return;
+        }
         thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(matches_size),
                          [matches, dest_len=dest_ref->ref_string.size()] __device__(size_t i) {
                              matches[i].posDest = dest_len - (matches[i].posDest + matches[i].length);
@@ -871,6 +877,12 @@ public:
         thrust::sort(thrust::device, matches, matches + matches_size);
         matches_size = thrust::unique(thrust::device, matches, matches + matches_size) - matches;
         // printf("Unique exact matches: %llu\n", matches_size);
+        if (matches_size == 0) {
+            cudaFree(matches);
+            cudaFree(matches_size_atomic);
+            reverse_complement(dest_ref->ref_string);
+            return;
+        }
         cudaMallocHost((void**) &matches_host, matches_size * sizeof(MatchResult));
         cudaMemcpy(matches_host, matches, matches_size * sizeof(MatchResult), cudaMemcpyDeviceToHost);
         cudaFree(matches);
