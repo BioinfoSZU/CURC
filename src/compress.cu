@@ -618,10 +618,6 @@ struct RefMatcher {
         if (L % 2) seq[L / 2] = PgSAHelpers::reverseComplement(seq[L / 2]);
     }
 
-//    static string getTotalMatchStat(uint64_t totalMatchLength, uint64_t destPgLength) {
-//        return PgSAHelpers::toString(totalMatchLength) + " (" + PgSAHelpers::toString((totalMatchLength * 100.0) / destPgLength, 1) + "%)";
-//    }
-
     static constexpr size_t src_step = 5;
     static constexpr size_t dest_step = 3;
     static constexpr size_t kmer_size = 36;
@@ -740,7 +736,6 @@ public:
                                     if (compare_len == 0) {
                                         unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1);
                                         /// assert(matches_idx < match_result_capacity)
-                                        /// ignore the range check, thrust::system::error may be throwed in some extreme cases
                                         matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
                                         goto finish;
                                         // break;
@@ -789,7 +784,6 @@ public:
                                          if (compare_len == 0) {
                                              unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1);
                                              /// assert(matches_idx < match_result_capacity)
-                                             /// ignore the range check, thrust::system::error may be throwed in some extreme cases
                                              matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
                                              break;
                                          }
@@ -802,7 +796,6 @@ public:
     // template<size_t read_unit_size>
     void match(RefRecord * dest_ref, std::string& MapOff, std::string& MapLen, bool dest_contain_N, bool dest_is_ref) {
         cudaSetDevice(device_id);
-        // auto dest_ref_size = dest_ref->ref_string.size();
         MatchResult * matches, * matches_host;
         unsigned long long matches_size;
         unsigned long long * matches_size_atomic;
@@ -813,7 +806,6 @@ public:
         } else {
             match_result_capacity = dest_index_count * unmap_ref_match_result_ratio;
         }
-        // printf("match result capacity : %zu \n", match_result_capacity);
         gpuErrorCheck(cudaMalloc((void**) &matches, match_result_capacity * sizeof(MatchResult)));
         cudaMalloc((void**) &matches_size_atomic, sizeof(unsigned long long));
         cudaMemset(matches_size_atomic, 0, sizeof(unsigned long long));
@@ -846,7 +838,6 @@ public:
         }
 
         cudaMemcpy(&matches_size, matches_size_atomic, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
-        // printf("matches result size : %llu\n", matches_size);
         if (matches_size == 0) {
             cudaFree(matches);
             cudaFree(matches_size_atomic);
@@ -876,7 +867,6 @@ public:
 
         thrust::sort(thrust::device, matches, matches + matches_size);
         matches_size = thrust::unique(thrust::device, matches, matches + matches_size) - matches;
-        // printf("Unique exact matches: %llu\n", matches_size);
         if (matches_size == 0) {
             cudaFree(matches);
             cudaFree(matches_size_atomic);
@@ -936,8 +926,6 @@ public:
         MapOffDest.clear();
         MapLen = MapLenDest.str();
         MapLenDest.clear();
-//        printf("Final size of Pg: %zu (remove: %s ; %zu chars in overlapped dest symbol)\n",
-//               npos, getTotalMatchStat(totalMatched, dest_ref_size).c_str(), totalDestOverlap);
     }
 
 //    void finish_match() {
@@ -1664,9 +1652,8 @@ void block_compress(const uint64_t * reads_db_host,
 
     std::vector<uint64_t> id_to_pos;
     if (param.is_preserve_order) id_to_pos.resize(reads_count);
-    // std::string pe_flag;
     std::vector<uint32_t> pe_reads_order;
-    if (!param.is_preserve_order && param.is_paired_end) pe_reads_order.reserve(reads_count); // pe_flag.reserve(reads_count);
+    if (!param.is_preserve_order && param.is_paired_end) pe_reads_order.reserve(reads_count);
     {
         auto & record = ref->record;
         auto record_size = record.size();
@@ -1717,10 +1704,8 @@ void block_compress(const uint64_t * reads_db_host,
             } else {
                 if (param.is_paired_end) {
                     if (is_contain_N) {
-                        // pe_flag += (char) ((uint32_t)'0' + N_reads_id[read_id] % 2);
                         pe_reads_order.push_back(N_reads_id[read_id]);
                     } else {
-                        // pe_flag += (char) ((uint32_t)'0' + read_id % 2);
                         pe_reads_order.push_back(read_id);
                     }
                 }
@@ -1879,7 +1864,6 @@ void block_compress(const uint64_t * reads_db_host,
         for (size_t i = 0; i < unmapping_ref->record.size(); ++i) {
             uint32_t read_id = unmapping_ref->record[i].read_id ;
             if (param.is_paired_end) {
-                // pe_flag += (char)((uint32_t)'0' + read_id % 2);
                 pe_reads_order.push_back(read_id);
             }
             reads_off_stream.push_back(param.read_len - (unmapping_ref->record[i].pos - last_pos));
@@ -1900,7 +1884,6 @@ void block_compress(const uint64_t * reads_db_host,
         for (size_t i = 0; i < unmapping_N_ref->record.size(); ++i) {
             uint32_t read_id = unmapping_N_ref->record[i].read_id;
             if (param.is_paired_end) {
-                // pe_flag += (char)((uint32_t)'0' + N_reads_id[read_id] % 2);
                 pe_reads_order.push_back(N_reads_id[read_id]);
             }
             N_reads_off_stream.push_back(param.read_len - (unmapping_N_ref->record[i].pos - last_pos));
@@ -1920,17 +1903,6 @@ void block_compress(const uint64_t * reads_db_host,
             paired_end_reads_order_compress(pe_reads_order, pe_reads_order_comp, working_path, param.flzma2_level, param.flzma2_thread_num);
             pe_reads_order.clear();
             pe_reads_order.shrink_to_fit();
-
-//            {
-//                std::ofstream pe_flag_txt(working_path / "pe_flag.txt");
-//                pe_flag_txt << pe_flag;
-//            }
-//            {
-//                bsc_compress((working_path / "pe_flag.txt").c_str(), (working_path / "pe_flag.bsc").c_str());
-//                fs::remove(working_path / "pe_flag.txt");
-//                pe_flag.clear();
-//                pe_flag.shrink_to_fit();
-//            }
         }
     });
 
@@ -2047,7 +2019,6 @@ void block_compress(const uint64_t * reads_db_host,
         read_file_and_output(working_path / "unmapping_N_read_off.lzma");
         read_file_and_output(working_path / "unmapping_read_off.lzma");
         if (param.is_paired_end) {
-            // read_file_and_output(working_path / "pe_flag.bsc");
             read_file_and_output(working_path / "pe_order.comp");
         }
     }
@@ -2338,59 +2309,5 @@ void compress(Param& param) {
         std::exit(0);
     }
     process(param);
-
-//    switch(read_unit_size) {
-//        case 1: // <= 32 bases
-//            process<1>(param);
-//            break;
-//        case 2: // <= 64 bases
-//            process<2>(param);
-//            break;
-//        case 3: // <= 96 bases
-//            process<3>(param);
-//            break;
-//        case 4: // <= 128 bases
-//            process<4>(param);
-//            break;
-//        case 5: // <= 160 bases
-//            process<5>(param);
-//            break;
-//        case 6: // <= 192 bases
-//            process<6>(param);
-//            break;
-//        case 7: // <= 224 bases
-//            process<7>(param);
-//            break;
-//        case 8: // <= 256 bases
-//            process<8>(param);
-//            break;
-//        case 9: // <= 288 bases
-//            process<9>(param);
-//            break;
-//        case 10: // <= 320 bases
-//            process<10>(param);
-//            break;
-//        case 11: // <= 352 bases
-//            process<11>(param);
-//            break;
-//        case 12: // <= 384 bases
-//            process<12>(param);
-//            break;
-//        case 13: // <= 416 bases
-//            process<13>(param);
-//            break;
-//        case 14: // <= 448 bases
-//            process<14>(param);
-//            break;
-//        case 15: // <= 480 bases
-//            process<15>(param);
-//            break;
-//        case 16: // <= 512 bases
-//            process<16>(param);
-//            break;
-//        default:
-//            printf("Read length must be less than 512");
-//            break;
-//    }
 }
 

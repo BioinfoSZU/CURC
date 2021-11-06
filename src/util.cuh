@@ -7,8 +7,8 @@
 #ifndef ABS
 #define ABS std::abs
 #endif
-#include <fqzcomp/clr.cdr>
-#include <fqzcomp/simple_model.h>
+#include <range_coder/clr.cdr>
+#include <range_coder/simple_model.h>
 #include <lzma/VarLenDNACoder/LzmaLib.h>
 #include "fast_lzma2_helper.hpp"
 
