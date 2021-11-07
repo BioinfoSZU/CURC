@@ -2,7 +2,7 @@
 
 int main(int argc, char **argv) {
     cudaDeviceProp dP;
-    float min_cc = 6.0;
+    float min_cc = 3.7;
 
     int rc = cudaGetDeviceProperties(&dP, 0);
     if(rc != cudaSuccess) {
@@ -11,7 +11,8 @@ int main(int argc, char **argv) {
         return rc; /* Failure */
     }
     if((dP.major+(dP.minor/10)) < min_cc) {
-        printf("Min Compute Capability of %2.1f required:  %d.%d found\n Not Building CUDA Code", min_cc, dP.major, dP.minor);
+        // printf("Min Compute Capability of %2.1f required:  %d.%d found\n Not Building CUDA Code", min_cc, dP.major, dP.minor);
+        printf("%d", dP.major * 10 + dP.minor);
         return 1; /* Failure */
     } else {
         printf("%d", dP.major * 10 + dP.minor);
