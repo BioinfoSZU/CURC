@@ -33,7 +33,7 @@ The `nvcc_path` is `<cuda_path>/bin/nvcc` (make sure that CUDA version >= 10.1 b
 and you can check CUDA version using `cat <cuda_path>/version.txt`). 
 
 Choose one of the following commands to build source based on your system environment.
-- with cmake installed and version at least 3.19. 
+- with cmake installed and version at least 3.19:
 ```bash
 git clone https://github.com/BioinfoSZU/CURC.git
 cd CURC 
@@ -61,7 +61,7 @@ make
 
 ### Usage
 Run the CURC executable in the build directory with the options below:
-```bash 
+```text
 CUDA Read Compressor v1.0.0
 Usage:
   curc [OPTION...]
