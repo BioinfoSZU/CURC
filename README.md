@@ -23,14 +23,14 @@ yum install devtoolset-7-gcc-c++
 scl enable devtoolset-7 bash # optional step (if you want to set GCC 7 as default compiler in bash)
 ```
 
-2. Checking CUDA version using `cat <cuda_path>/version.txt` or `nvcc --version`.
+2. Checking CUDA version using `cat <cuda_path>/version.txt`(eg `cat /usr/local/cuda/version.txt`) or `nvcc --version`.
 If CUDA isn't installed or with version older than 10.1, you can download and install CUDA from https://developer.nvidia.com/cuda-toolkit-archive. 
 
 #### Build
 CURC uses cmake as the build system, and you can check cmake version using `cmake --version`.
 CMake uses `nvcc_path` to detect the CUDA toolkit settings. 
-The `nvcc_path` is `<cuda_path>/bin/nvcc` (make sure that CUDA version >= 10.1 before building, 
-and you can check CUDA version using `cat <cuda_path>/version.txt`). 
+The `nvcc_path` is `<cuda_path>/bin/nvcc` (eg `/usr/local/cuda/bin/nvcc`). 
+Make sure that CUDA version >= 10.1 before building, and you can check CUDA version using `cat <cuda_path>/version.txt`). 
 
 Choose one of the following commands to build source based on your system environment.
 - with cmake installed and version at least 3.19:
