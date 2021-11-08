@@ -136,7 +136,7 @@ the block size should be kept small to avoid the out-of-memory issue (around 20 
 
 ### Sample data
 |   dataset    |  download command | direct download link   |
-|   :----:     |      :----       |        :----:          |
+|   :----:     |      :----:       |        :----:          |
 | SRR635193_1  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR635/SRR635193/SRR635193_1.fastq.gz` | [SRR635193_1.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR635/SRR635193/SRR635193_1.fastq.gz) |
 | SRR445724    |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR445/SRR445724/SRR445724.fastq.gz`   | [SRR445724.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR445/SRR445724/SRR445724.fastq.gz)   |
 | SRR065390_1  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_1.fastq.gz` | [SRR065390_1.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_1.fastq.gz) |
