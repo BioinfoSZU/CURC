@@ -100,8 +100,8 @@ CUDA_VISIBLE_DEVICES=2 ./curc <args>      # specify gpu device 2 that CURC uses
 ### Block ratio
 CURC processes FASTQ file block by block. The block ratio is defined as the single block size divided by the size of the entire FASTQ file.
 The default value of block_ratio is 1, which means compressing the entire FASTQ in one block.
-If the GPU has sufficient memory (eg, 16 GB), the block size can be set to large value (eg, 50 GB), otherwise, 
-the block size should be kept small to avoid the out-of-memory issue (10-20 GB is reasonable).
+If the GPU has sufficient memory (eg, 16 GB), the block size can be set to a large value (eg, 50 GB), otherwise, 
+the block size should be kept small to avoid the out-of-memory issue (around 20 GB is reasonable).
 
 ### Example Usage
 - To compress single-end FASTQ reads in order non-preserving mode with one block
@@ -135,4 +135,9 @@ the block size should be kept small to avoid the out-of-memory issue (10-20 GB i
 ```
 
 ### Sample data
-[SRR554369_1_sample.fastq.gz](data/SRR554369_1_sample.fastq.gz)
+|   dataset    |  download command | direct download link   |
+|   :----:     |      :----:       |        :----:          |
+| SRR635193_1  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR635/SRR635193/SRR635193_1.fastq.gz` | [SRR635193_1.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR635/SRR635193/SRR635193_1.fastq.gz) |
+| SRR445724    |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR445/SRR445724/SRR445724.fastq.gz`   | [SRR445724.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR445/SRR445724/SRR445724.fastq.gz)   |
+| SRR065390_1  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_1.fastq.gz` | [SRR065390_1.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_1.fastq.gz) |
+| SRR065390_2  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_2.fastq.gz` | [SRR065390_2.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_2.fastq.gz) |
