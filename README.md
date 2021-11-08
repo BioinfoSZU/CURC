@@ -83,6 +83,7 @@ Usage:
       --flzma2_thread_num arg  fast-lzma2 compression/decompression thread 
                                number (default: 16)
       --preserve_order         preserve order information
+  -v, --version                print version
   -h, --help                   print usage
 ```
 

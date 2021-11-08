@@ -20,9 +20,14 @@ int main(int argc, char** argv) {
             ("flzma2_level", "fast-lzma2 compression level [1...10]", cxxopts::value<int>()->default_value("10"))
             ("flzma2_thread_num", "fast-lzma2 compression/decompression thread number", cxxopts::value<int>()->default_value("16"))
             ("preserve_order", "preserve order information", cxxopts::value<bool>()->default_value("false"))
+            ("v,version", "print version")
             ("h,help", "print usage");
     try {
         auto result = options.parse(argc, argv);
+        if (result.count("version")) {
+            std::cout << CURC_VERSION_STRING << "\n";
+            std::exit(0);
+        }
         if (result.count("help")    ||
             !result.count("input")  ||
             !result.count("output") ||
