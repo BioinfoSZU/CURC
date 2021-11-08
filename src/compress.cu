@@ -623,8 +623,8 @@ struct RefMatcher {
     static constexpr size_t kmer_size = 36;
     static constexpr size_t target_match_len = 50;
     static constexpr size_t bucket_size_limit = 12;
-    static constexpr double ref_match_result_ratio = 0.15;
-    static constexpr double unmap_ref_match_result_ratio = 0.1;
+    static constexpr double ref_match_result_ratio = 0.16; // 0.15;
+    static constexpr double unmap_ref_match_result_ratio = 0.15; // 0.1;
 
 private:
     size_t ref_len;
