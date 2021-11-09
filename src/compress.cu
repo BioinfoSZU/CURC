@@ -2077,7 +2077,7 @@ void process(const Param& param) {
             cudaSetDevice(0);
             uint16_t read_len = param.read_len;
             uint64_t * binary_reads_buffer;
-            cudaMalloc((void**) &binary_reads_buffer, buffer_reads_count * read_unit_size * sizeof(uint64_t));
+            gpuErrorCheck(cudaMalloc((void**) &binary_reads_buffer, buffer_reads_count * read_unit_size * sizeof(uint64_t)));
             thrust::for_each(thrust::device,
                              thrust::counting_iterator<uint32_t>(0),
                              thrust::counting_iterator<uint32_t>(buffer_reads_count),
@@ -2202,8 +2202,8 @@ void process(const Param& param) {
 
             char * reads_db_buffer_device;
             uint8_t * buffer_contain_N_flags_device;
-            cudaMalloc((void**) &reads_db_buffer_device, buffer_reads_count * param.read_len);
-            cudaMalloc((void**) &buffer_contain_N_flags_device, buffer_reads_count * sizeof(uint8_t));
+            gpuErrorCheck(cudaMalloc((void**) &reads_db_buffer_device, buffer_reads_count * param.read_len));
+            gpuErrorCheck(cudaMalloc((void**) &buffer_contain_N_flags_device, buffer_reads_count * sizeof(uint8_t)));
             cudaMemcpy(reads_db_buffer_device, reads_db_buffer, buffer_reads_count * param.read_len, cudaMemcpyHostToDevice);
             cudaMemcpy(buffer_contain_N_flags_device, buffer_contain_N_flags, buffer_reads_count * sizeof(uint8_t), cudaMemcpyHostToDevice);
             encode_futures.push_back(std::async(std::launch::async, encode, reads_db_buffer_device, buffer_contain_N_flags_device, param, buffer_reads_count, reads_count));
