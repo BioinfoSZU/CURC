@@ -3,7 +3,6 @@
 #include <thrust/binary_search.h>
 #include <thrust/system/cuda/execution_policy.h>
 #include <thrust/system/omp/execution_policy.h>
-#include <mio/mio.hpp>
 #include "compress.cuh"
 #include "constant.hpp"
 #include "util.cuh"
@@ -22,6 +21,27 @@ while(!finish) {                                                 \
         }                                                        \
     }                                                            \
 }                                                                \
+
+//#define LOCK_START                                               \
+//finish = false;                                                  \
+//while(!finish) {                                                 \
+//    if (gpu_lock[device_id].try_lock()) {                        \
+//
+//#define LOCK_END                                                 \
+//        gpu_lock[device_id].unlock();                            \
+//        finish = true;                                           \
+//        break;                                                   \
+//    }                                                            \
+//}                                                                \
+
+//std::mutex device_id_mutex;
+//int global_device_id = 0;
+//void query_idle_gpu(int device_count, int & device_id) {
+//    {
+//        const std::lock_guard<std::mutex> lock(device_id_mutex);
+//        device_id = global_device_id++ % device_count;
+//    }
+//}
 
 struct AlignmentRecord {
     uint32_t read_id;
@@ -232,6 +252,7 @@ private:
     size_t unmatch_reads_count;
     size_t N_reads_count;
     const Param& param;
+    const cudaStream_t& stream;
 
     uint64_t * reads_db;
     char * N_reads_db;
@@ -245,15 +266,15 @@ private:
     uint32_t hash_size_minus_one;
 
 public:
-    ReadMapper(int device_id, size_t ref_len, size_t unmatch_reads_count, size_t N_reads_count, const Param& param)
-    : device_id(device_id), ref_len(ref_len), unmatch_reads_count(unmatch_reads_count), N_reads_count(N_reads_count), param(param) {}
+    ReadMapper(int device_id, size_t ref_len, size_t unmatch_reads_count, size_t N_reads_count, const Param& param, const cudaStream_t& stream)
+    : device_id(device_id), ref_len(ref_len), unmatch_reads_count(unmatch_reads_count), N_reads_count(N_reads_count), param(param), stream(stream) {}
 
     void init(const uint64_t * reads_db_host,  const char* N_reads_db_host, const uint32_t * unmatch_reads_id,
               const uint64_t * binary_ref, size_t binary_ref_size) {
         cudaSetDevice(device_id);
         size_t read_unit_size = param.read_unit_size;
         uint64_t * reads_db_buffer;
-        cudaMallocHost((void**) &reads_db_buffer, unmatch_reads_count * read_unit_size * sizeof(uint64_t));
+        cudaHostAlloc((void**) &reads_db_buffer, unmatch_reads_count * read_unit_size * sizeof(uint64_t), cudaHostAllocPortable);
 #pragma omp parallel for
         for (size_t i = 0; i < unmatch_reads_count; ++i) {
 #pragma omp simd
@@ -262,22 +283,25 @@ public:
             }
         }
         gpuErrorCheck(cudaMalloc((void**) &reads_db, unmatch_reads_count * read_unit_size * sizeof(uint64_t)));
-        cudaMemcpy(reads_db, reads_db_buffer, unmatch_reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(reads_db, reads_db_buffer, unmatch_reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
+        cudaStreamSynchronize(stream);
         cudaFreeHost(reads_db_buffer);
 
-        gpuErrorCheck(cudaMalloc((void**) &N_reads_db, N_reads_count * param.read_len));
-        cudaMemcpy(N_reads_db, N_reads_db_host, N_reads_count * param.read_len, cudaMemcpyHostToDevice);
+        if (N_reads_count) {
+            gpuErrorCheck(cudaMalloc((void **) &N_reads_db, N_reads_count * param.read_len));
+            cudaMemcpyAsync(N_reads_db, N_reads_db_host, N_reads_count * param.read_len, cudaMemcpyHostToDevice, stream);
+        }
 
         gpuErrorCheck(cudaMalloc((void**) &ref, binary_ref_size * sizeof(uint64_t)));
-        cudaMemcpy(ref, binary_ref, binary_ref_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(ref, binary_ref, binary_ref_size * sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
 
         gpuErrorCheck(cudaMalloc((void**) &matches, (unmatch_reads_count + N_reads_count) * sizeof(AlignmentRecord)));
         gpuErrorCheck(cudaMalloc((void**) &last_mismatch_count, (unmatch_reads_count + N_reads_count) * sizeof(uint8_t)));
-        thrust::uninitialized_fill(thrust::device,
+        thrust::uninitialized_fill(thrust::cuda::par.on(stream),
                                    last_mismatch_count,
                                    last_mismatch_count + unmatch_reads_count + N_reads_count,
                                    param.max_mismatch_count + 1);
-        thrust::for_each(thrust::device,
+        thrust::for_each(thrust::cuda::par.on(stream),
                          thrust::counting_iterator<uint32_t>(0),
                          thrust::counting_iterator<uint32_t>(unmatch_reads_count + N_reads_count),
                          [unmatch_reads_count = unmatch_reads_count, matches = matches] __device__(uint32_t i) {
@@ -322,8 +346,8 @@ public:
         hash_size_minus_one = hash_size - 1;
         uint8_t * counts;
         gpuErrorCheck(cudaMalloc((void**) &counts, hash_size + 2));
-        thrust::uninitialized_fill(thrust::device, counts, counts + hash_size + 2, 0);
-        thrust::for_each(thrust::device,
+        thrust::uninitialized_fill(thrust::cuda::par.on(stream), counts, counts + hash_size + 2, 0);
+        thrust::for_each(thrust::cuda::par.on(stream),
                          thrust::counting_iterator<size_t>(0),
                          thrust::counting_iterator<size_t>(index_count),
                          [ref = ref, hash_size_minus_one = hash_size_minus_one, step, k, bucket_limit, index_start_pos, counts]
@@ -338,13 +362,14 @@ public:
                          });
 
         gpuErrorCheck(cudaMalloc((void**) &key_ranges, (hash_size + 2) * sizeof(uint32_t)));
-        thrust::exclusive_scan(thrust::device, counts, counts + hash_size + 2, key_ranges, 0);
+        thrust::exclusive_scan(thrust::cuda::par.on(stream), counts, counts + hash_size + 2, key_ranges, 0);
 
         uint32_t hash_count;
-        cudaMemcpy(&hash_count, key_ranges + hash_size + 1, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+        cudaMemcpyAsync(&hash_count, key_ranges + hash_size + 1, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
         gpuErrorCheck(cudaMalloc((void**) &pos_array, (hash_count + 2) * sizeof(uint32_t)));
 
-        thrust::for_each(thrust::device,
+        thrust::for_each(thrust::cuda::par.on(stream),
                          thrust::counting_iterator<size_t>(0),
                          thrust::counting_iterator<size_t>(index_count),
                          [ref=ref, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one = hash_size_minus_one, step, k, index_start_pos, counts]
@@ -366,7 +391,7 @@ public:
     template<bool is_reverse_complement>
     void mapping (size_t k, size_t step, size_t read_index_step, size_t index_start_pos, size_t target_mismatch_count) {
         cudaSetDevice(device_id);
-        thrust::for_each(thrust::device,
+        thrust::for_each(thrust::cuda::par.on(stream),
                          thrust::counting_iterator<uint32_t>(0),
                          thrust::counting_iterator<uint32_t>(unmatch_reads_count + N_reads_count),
                                  [last_mismatch_count = last_mismatch_count, matches = matches,
@@ -481,50 +506,59 @@ public:
                     std::vector<AlignmentRecord>& map_record, std::vector<uint8_t>& map_mis_cnt) {
         cudaSetDevice(device_id);
         cudaFree(reads_db);
-        cudaFree(N_reads_db);
+        if (N_reads_count) {
+            cudaFree(N_reads_db);
+        }
         cudaFree(ref);
         uint32_t * unmapping_reads_id_device;
         uint32_t * unmapping_N_reads_id_device;
         gpuErrorCheck(cudaMalloc((void**) &unmapping_reads_id_device, unmatch_reads_count * sizeof(uint32_t)));
-        gpuErrorCheck(cudaMalloc((void**) &unmapping_N_reads_id_device, N_reads_count * sizeof(uint32_t)));
-        cudaMemcpy(unmapping_reads_id_device, unmapping_reads_id, unmatch_reads_count * sizeof(uint32_t), cudaMemcpyHostToDevice);
-        thrust::sequence(thrust::device, unmapping_N_reads_id_device, unmapping_N_reads_id_device + N_reads_count, 0);
-        thrust::for_each(thrust::device, thrust::counting_iterator<uint32_t>(0), thrust::counting_iterator<uint32_t>(unmatch_reads_count),
+        cudaMemcpyAsync(unmapping_reads_id_device, unmapping_reads_id, unmatch_reads_count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream);
+        if (N_reads_count) {
+            gpuErrorCheck(cudaMalloc((void **) &unmapping_N_reads_id_device, N_reads_count * sizeof(uint32_t)));
+            thrust::sequence(thrust::cuda::par.on(stream), unmapping_N_reads_id_device, unmapping_N_reads_id_device + N_reads_count, 0);
+        }
+        thrust::for_each(thrust::cuda::par.on(stream), thrust::counting_iterator<uint32_t>(0), thrust::counting_iterator<uint32_t>(unmatch_reads_count),
                 [matches = matches, unmapping_reads_id_device]__device__(uint32_t i) {
             matches[i].read_id = unmapping_reads_id_device[i];
         });
         uint32_t * indices;
         gpuErrorCheck(cudaMalloc((void**)&indices, (unmatch_reads_count + N_reads_count) * sizeof(uint32_t)));
-        thrust::sequence(thrust::device, indices, indices + unmatch_reads_count + N_reads_count, 0);
+        thrust::sequence(thrust::cuda::par.on(stream), indices, indices + unmatch_reads_count + N_reads_count, 0);
         unmapping_reads_count =
-                thrust::remove_if(thrust::device,
+                thrust::remove_if(thrust::cuda::par.on(stream),
                                   thrust::make_zip_iterator(thrust::make_tuple(unmapping_reads_id_device, indices)),
                                   thrust::make_zip_iterator(thrust::make_tuple(unmapping_reads_id_device + unmatch_reads_count, indices + unmatch_reads_count)),
                                   [last_mismatch_count = last_mismatch_count, max_mismatch_count = param.max_mismatch_count] __device__ (const thrust::tuple<uint32_t, uint32_t>& item) {
                     return last_mismatch_count[thrust::get<1>(item)] <= max_mismatch_count;
                 }) - thrust::make_zip_iterator(thrust::make_tuple(unmapping_reads_id_device, indices));
-        unmapping_N_reads_count =
-                thrust::remove_if(thrust::device,
-                                  thrust::make_zip_iterator(thrust::make_tuple(unmapping_N_reads_id_device, indices + unmatch_reads_count)),
-                                  thrust::make_zip_iterator(thrust::make_tuple(unmapping_N_reads_id_device + N_reads_count, indices + unmatch_reads_count + N_reads_count)),
-                                  [last_mismatch_count = last_mismatch_count, max_mismatch_count = param.max_mismatch_count] __device__ (const thrust::tuple<uint32_t,uint32_t>& item) {
-                    return last_mismatch_count[thrust::get<1>(item)] <= max_mismatch_count;
-                }) - thrust::make_zip_iterator(thrust::make_tuple(unmapping_N_reads_id_device, indices + unmatch_reads_count));
+        unmapping_N_reads_count = 0;
+        if (N_reads_count) {
+            unmapping_N_reads_count =
+                    thrust::remove_if(thrust::cuda::par.on(stream),
+                                      thrust::make_zip_iterator(thrust::make_tuple(unmapping_N_reads_id_device, indices + unmatch_reads_count)),
+                                      thrust::make_zip_iterator(thrust::make_tuple(unmapping_N_reads_id_device + N_reads_count, indices + unmatch_reads_count + N_reads_count)),
+                                      [last_mismatch_count = last_mismatch_count, max_mismatch_count = param.max_mismatch_count] __device__ (const thrust::tuple<uint32_t,uint32_t>& item) {
+                        return last_mismatch_count[thrust::get<1>(item)] <= max_mismatch_count;
+                    }) - thrust::make_zip_iterator(thrust::make_tuple(unmapping_N_reads_id_device, indices + unmatch_reads_count));
+        }
 
         if (unmapping_N_reads_count > 0) {
-            cudaMallocHost((void **) &unmapping_N_reads_id, unmapping_N_reads_count * sizeof(uint32_t));
-            cudaMemcpy(unmapping_N_reads_id, unmapping_N_reads_id_device, unmapping_N_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+            cudaHostAlloc((void **) &unmapping_N_reads_id, unmapping_N_reads_count * sizeof(uint32_t), cudaHostAllocPortable);
+            cudaMemcpyAsync(unmapping_N_reads_id, unmapping_N_reads_id_device, unmapping_N_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
         }
         if (unmapping_reads_count > 0) {
-            cudaMemcpy(unmapping_reads_id, unmapping_reads_id_device, unmapping_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+            cudaMemcpyAsync(unmapping_reads_id, unmapping_reads_id_device, unmapping_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
         }
+        cudaStreamSynchronize(stream);
 
         cudaFree(indices);
         cudaFree(unmapping_reads_id_device);
-        cudaFree(unmapping_N_reads_id_device);
-
+        if (N_reads_count) {
+            cudaFree(unmapping_N_reads_id_device);
+        }
         size_t map_record_size =
-                thrust::remove_if(thrust::device,
+                thrust::remove_if(thrust::cuda::par.on(stream),
                                   thrust::make_zip_iterator(thrust::make_tuple(matches, last_mismatch_count)),
                                   thrust::make_zip_iterator(thrust::make_tuple(matches + unmatch_reads_count + N_reads_count, last_mismatch_count + unmatch_reads_count + N_reads_count)),
                                   [max_mismatch_count = param.max_mismatch_count] __device__ (const thrust::tuple<AlignmentRecord, uint8_t>& item) {
@@ -532,8 +566,9 @@ public:
                 }) - thrust::make_zip_iterator(thrust::make_tuple(matches, last_mismatch_count));
         map_record.resize(map_record_size);
         map_mis_cnt.resize(map_record_size);
-        cudaMemcpy(map_record.data(), matches, map_record_size * sizeof(AlignmentRecord), cudaMemcpyDeviceToHost);
-        cudaMemcpy(map_mis_cnt.data(), last_mismatch_count, map_record_size * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+        cudaMemcpyAsync(map_record.data(), matches, map_record_size * sizeof(AlignmentRecord), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(map_mis_cnt.data(), last_mismatch_count, map_record_size * sizeof(uint8_t), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
         cudaFree(matches);
         cudaFree(last_mismatch_count);
     }
@@ -623,13 +658,14 @@ struct RefMatcher {
     static constexpr size_t kmer_size = 36;
     static constexpr size_t target_match_len = 50;
     static constexpr size_t bucket_size_limit = 12;
-    static constexpr double ref_match_result_ratio = 0.16; // 0.15;
-    static constexpr double unmap_ref_match_result_ratio = 0.15; // 0.1;
+    static constexpr double ref_match_result_ratio = 0.2; // 0.16; // 0.15;
+    static constexpr double unmap_ref_match_result_ratio = 0.21; // 0.15; // 0.1;
 
 private:
     size_t ref_len;
     int device_id;
     const Param& param;
+    const cudaStream_t& stream;
 
     uint64_t * ref;
     uint32_t * key_ranges;
@@ -637,7 +673,7 @@ private:
     uint32_t hash_size_minus_one;
 
 public:
-    RefMatcher(size_t ref_len, int device_id, const Param& param): ref_len(ref_len), device_id(device_id), param(param) {}
+    RefMatcher(size_t ref_len, int device_id, const Param& param, const cudaStream_t& stream): ref_len(ref_len), device_id(device_id), param(param), stream(stream) {}
 
     void init(const uint64_t * binary_ref, size_t binary_ref_size) {
         cudaSetDevice(device_id);
@@ -649,12 +685,12 @@ public:
         auto hash_size = get_hash_size(index_count);
         hash_size_minus_one = hash_size - 1;
         gpuErrorCheck(cudaMalloc((void**) &ref, binary_ref_size * sizeof(uint64_t)));
-        cudaMemcpy(ref, binary_ref, binary_ref_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(ref, binary_ref, binary_ref_size * sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
 
         uint8_t * counts;
         gpuErrorCheck(cudaMalloc((void**) &counts, hash_size + 2));
-        thrust::uninitialized_fill(thrust::device, counts, counts + hash_size + 2, 0);
-        thrust::for_each(thrust::device,
+        thrust::uninitialized_fill(thrust::cuda::par.on(stream), counts, counts + hash_size + 2, 0);
+        thrust::for_each(thrust::cuda::par.on(stream),
                          thrust::counting_iterator<size_t>(0),
                          thrust::counting_iterator<size_t>(index_count),
                          [ref = ref, hash_size_minus_one = hash_size_minus_one, counts]
@@ -665,13 +701,14 @@ public:
                          });
 
         gpuErrorCheck(cudaMalloc((void**) &key_ranges, (hash_size + 2) * sizeof(uint32_t)));
-        thrust::exclusive_scan(thrust::device, counts, counts + hash_size + 2, key_ranges, 0);
+        thrust::exclusive_scan(thrust::cuda::par.on(stream), counts, counts + hash_size + 2, key_ranges, 0);
 
         uint32_t hash_count;
-        cudaMemcpy(&hash_count, key_ranges + hash_size + 1, sizeof(uint32_t), cudaMemcpyDeviceToHost);
+        cudaMemcpyAsync(&hash_count, key_ranges + hash_size + 1, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
         gpuErrorCheck(cudaMalloc((void**) &pos_array, (hash_count + 2) * sizeof(uint32_t)));
 
-        thrust::for_each(thrust::device,
+        thrust::for_each(thrust::cuda::par.on(stream),
                          thrust::counting_iterator<size_t>(0),
                          thrust::counting_iterator<size_t>(index_count),
                          [ref=ref, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one = hash_size_minus_one, counts]
@@ -688,15 +725,15 @@ public:
 
     void match_binary_dest(const uint64_t * dest, size_t dest_len,
                            MatchResult * matches, unsigned long long * matches_size_atomic,
-                           size_t dest_index_count, bool dest_is_ref) {
+                           size_t dest_index_count, bool dest_is_ref, size_t match_result_capacity) {
         cudaSetDevice(device_id);
         constexpr size_t dest_segement_step = 4;
         size_t dest_segement_count = (dest_index_count + dest_segement_step - 1) / dest_segement_step;
-        thrust::for_each(thrust::device,
+        thrust::for_each(thrust::cuda::par.on(stream),
                          thrust::counting_iterator<size_t>(0),
                          thrust::counting_iterator<size_t>(dest_segement_count /*dest_index_count*/),
                 [dest, matches, matches_size_atomic, dest_len, dest_is_ref,
-                 ref=ref, ref_len=ref_len, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one=hash_size_minus_one]
+                 ref=ref, ref_len=ref_len, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one=hash_size_minus_one, match_result_capacity]
                 __device__(size_t i) {
                     for (size_t s = 0; s < dest_segement_step; ++s) {
                         uint64_t dest_pos = (i * dest_segement_step + s) * dest_step;
@@ -734,9 +771,10 @@ public:
                                         compare_len--;
                                     }
                                     if (compare_len == 0) {
-                                        unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1);
+                                        unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1); // TODO 64bit atomicAdd 貌似只在计算力 >= 6.x 的设备上支持
                                         /// assert(matches_idx < match_result_capacity)
-                                        matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
+                                        if (matches_idx < match_result_capacity)
+                                            matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
                                         goto finish;
                                         // break;
                                     }
@@ -748,11 +786,11 @@ public:
         });
     }
 
-    void match_char_dest(const char * dest, size_t dest_len, MatchResult * matches, unsigned long long * matches_size_atomic, size_t dest_index_count) {
+    void match_char_dest(const char * dest, size_t dest_len, MatchResult * matches, unsigned long long * matches_size_atomic, size_t dest_index_count, size_t match_result_capacity) {
         cudaSetDevice(device_id);
-        thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(dest_index_count),
+        thrust::for_each(thrust::cuda::par.on(stream), thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(dest_index_count),
                          [dest, matches, matches_size_atomic, dest_len,
-                          ref=ref, ref_len=ref_len, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one=hash_size_minus_one]
+                          ref=ref, ref_len=ref_len, key_ranges=key_ranges, pos_array=pos_array, hash_size_minus_one=hash_size_minus_one, match_result_capacity]
                           __device__(size_t i) {
                              uint64_t dest_pos = i * dest_step;
                              uint32_t hash_pos = maRushPrime1HashChar<kmer_size>(dest + dest_pos) & hash_size_minus_one;
@@ -784,7 +822,8 @@ public:
                                          if (compare_len == 0) {
                                              unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1);
                                              /// assert(matches_idx < match_result_capacity)
-                                             matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
+                                             if (matches_idx < match_result_capacity)
+                                                 matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
                                              break;
                                          }
                                      }
@@ -796,6 +835,10 @@ public:
     // template<size_t read_unit_size>
     void match(RefRecord * dest_ref, std::string& MapOff, std::string& MapLen, bool dest_contain_N, bool dest_is_ref) {
         cudaSetDevice(device_id);
+        if (dest_ref->ref_string.empty()) {
+            printf("RefMatch dest is empty [dest_contain_N %d; dest_is_ref %d]", dest_contain_N, dest_is_ref);
+        }
+
         MatchResult * matches, * matches_host;
         unsigned long long matches_size;
         unsigned long long * matches_size_atomic;
@@ -806,6 +849,7 @@ public:
         } else {
             match_result_capacity = dest_index_count * unmap_ref_match_result_ratio;
         }
+        printf("match result bytes : %zu\n", match_result_capacity * sizeof(MatchResult));
         gpuErrorCheck(cudaMalloc((void**) &matches, match_result_capacity * sizeof(MatchResult)));
         cudaMalloc((void**) &matches_size_atomic, sizeof(unsigned long long));
         cudaMemset(matches_size_atomic, 0, sizeof(unsigned long long));
@@ -820,8 +864,8 @@ public:
             dest_ref->compute_binary_ref();
             uint64_t * dest;
             gpuErrorCheck(cudaMalloc((void**) &dest, dest_ref->binary_ref_size * sizeof(uint64_t)));
-            cudaMemcpy(dest, dest_ref->binary_ref_string, dest_ref->binary_ref_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
-            match_binary_dest(dest, dest_ref->ref_string.size(), matches, matches_size_atomic, dest_index_count, dest_is_ref);
+            cudaMemcpyAsync(dest, dest_ref->binary_ref_string, dest_ref->binary_ref_size * sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
+            match_binary_dest(dest, dest_ref->ref_string.size(), matches, matches_size_atomic, dest_index_count, dest_is_ref, match_result_capacity);
             cudaFree(dest);
             dest_ref->erase_binary_ref();
             if (dest_is_ref) {
@@ -832,24 +876,25 @@ public:
         } else {
             char * dest;
             gpuErrorCheck(cudaMalloc((void**) &dest, dest_ref->ref_string.size()));
-            cudaMemcpy(dest, dest_ref->ref_string.data(), dest_ref->ref_string.size(), cudaMemcpyHostToDevice);
-            match_char_dest(dest, dest_ref->ref_string.size(), matches, matches_size_atomic, dest_index_count);
+            cudaMemcpyAsync(dest, dest_ref->ref_string.data(), dest_ref->ref_string.size(), cudaMemcpyHostToDevice, stream);
+            match_char_dest(dest, dest_ref->ref_string.size(), matches, matches_size_atomic, dest_index_count, match_result_capacity);
             cudaFree(dest);
         }
 
-        cudaMemcpy(&matches_size, matches_size_atomic, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        cudaMemcpyAsync(&matches_size, matches_size_atomic, sizeof(unsigned long long), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
         if (matches_size == 0) {
             cudaFree(matches);
             cudaFree(matches_size_atomic);
             reverse_complement(dest_ref->ref_string);
             return;
         }
-        thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(matches_size),
+        thrust::for_each(thrust::cuda::par.on(stream), thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(matches_size),
                          [matches, dest_len=dest_ref->ref_string.size()] __device__(size_t i) {
                              matches[i].posDest = dest_len - (matches[i].posDest + matches[i].length);
                          });
         if (dest_is_ref) {
-            thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(matches_size),
+            thrust::for_each(thrust::cuda::par.on(stream), thrust::counting_iterator<size_t>(0), thrust::counting_iterator<size_t>(matches_size),
             [matches] __device__ (size_t i) {
                 if (matches[i].posSrc > matches[i].posDest) {
                     uint64_t tmp = matches[i].posSrc;
@@ -865,16 +910,17 @@ public:
             });
         }
 
-        thrust::sort(thrust::device, matches, matches + matches_size);
-        matches_size = thrust::unique(thrust::device, matches, matches + matches_size) - matches;
+        thrust::sort(thrust::cuda::par.on(stream), matches, matches + matches_size);
+        matches_size = thrust::unique(thrust::cuda::par.on(stream), matches, matches + matches_size) - matches;
         if (matches_size == 0) {
             cudaFree(matches);
             cudaFree(matches_size_atomic);
             reverse_complement(dest_ref->ref_string);
             return;
         }
-        cudaMallocHost((void**) &matches_host, matches_size * sizeof(MatchResult));
-        cudaMemcpy(matches_host, matches, matches_size * sizeof(MatchResult), cudaMemcpyDeviceToHost);
+        cudaHostAlloc((void**) &matches_host, matches_size * sizeof(MatchResult), cudaHostAllocPortable);
+        cudaMemcpyAsync(matches_host, matches, matches_size * sizeof(MatchResult), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
         cudaFree(matches);
         cudaFree(matches_size_atomic);
         reverse_complement(dest_ref->ref_string);
@@ -938,7 +984,7 @@ public:
 
 // template<size_t read_unit_size>
 void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * suffix_reads_id, uint32_t cnt,
-                    uint32_t * next, uint32_t * prev, uint16_t * offset, const Param& param, int device_id) {
+                    uint32_t * next, uint32_t * prev, uint16_t * offset, const Param& param, int device_id, const cudaStream_t & stream) {
     cudaSetDevice(device_id);
 
     constexpr size_t alphabet_size = 4;
@@ -949,7 +995,7 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
     auto read_unit_size = param.read_unit_size;
     for (int off = 1; off < read_len; ++off) {
         thrust::device_vector<uint32_t> suffix_sort_part(alphabet_size);
-        thrust::lower_bound(thrust::device,
+        thrust::lower_bound(thrust::cuda::par.on(stream),
                             suffix_reads_id, suffix_reads_id + cnt,
                             alphabet.begin(), alphabet.end(),
                             suffix_sort_part.begin(), [=] __device__ (const uint32_t & id, char value) {
@@ -974,19 +1020,19 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
 
             uint32_t * A_C_merge_suffix_id;
             gpuErrorCheck(cudaMalloc((void**)&A_C_merge_suffix_id, (G_part_begin - A_part_begin) * sizeof(uint32_t)));
-            thrust::merge(thrust::device,
+            thrust::merge(thrust::cuda::par.on(stream),
                           suffix_reads_id + A_part_begin, suffix_reads_id + C_part_begin,
                           suffix_reads_id + C_part_begin, suffix_reads_id + G_part_begin,
                           A_C_merge_suffix_id, compare);
 
             uint32_t * G_T_merge_suffix_id;
             gpuErrorCheck(cudaMalloc((void**)&G_T_merge_suffix_id, (cnt - G_part_begin) * sizeof(uint32_t)));
-            thrust::merge(thrust::device,
+            thrust::merge(thrust::cuda::par.on(stream),
                           suffix_reads_id + G_part_begin, suffix_reads_id + T_part_begin,
                           suffix_reads_id + T_part_begin, suffix_reads_id + cnt,
                           G_T_merge_suffix_id, compare);
 
-            thrust::merge(thrust::device,
+            thrust::merge(thrust::cuda::par.on(stream),
                           A_C_merge_suffix_id, A_C_merge_suffix_id + (G_part_begin - A_part_begin),
                           G_T_merge_suffix_id, G_T_merge_suffix_id + (cnt - G_part_begin),
                           suffix_reads_id, compare);
@@ -999,18 +1045,18 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
         size_t block_num = std::pow(alphabet_size, block_prefix_len);
 
         thrust::device_vector<uint32_t> blocks_id(block_num);
-        thrust::sequence(thrust::device, blocks_id.begin(), blocks_id.end(), 0);
+        thrust::sequence(thrust::cuda::par.on(stream), blocks_id.begin(), blocks_id.end(), 0);
         thrust::device_vector<uint32_t> prefix_id_range(block_num + 1), suffix_id_range(block_num + 1);
 
         {
-            thrust::lower_bound(thrust::device,
+            thrust::lower_bound(thrust::cuda::par.on(stream),
                                 prefix_reads_id, prefix_reads_id + cnt,
                                 blocks_id.begin(), blocks_id.end(),
                                 prefix_id_range.begin(),
                                 [=] __device__ (const uint32_t& id, uint32_t b_id) {
                                     return extract_word_gpu(reads_db, id * read_unit_size, 0, block_prefix_len) < b_id;
                                 });
-            thrust::lower_bound(thrust::device,
+            thrust::lower_bound(thrust::cuda::par.on(stream),
                                 suffix_reads_id, suffix_reads_id + cnt,
                                 blocks_id.begin(), blocks_id.end(),
                                 suffix_id_range.begin(),
@@ -1023,7 +1069,7 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
 
         uint32_t * prefix_id_range_ptr = thrust::raw_pointer_cast(prefix_id_range.data());
         uint32_t * suffix_id_range_ptr = thrust::raw_pointer_cast(suffix_id_range.data());
-        thrust::for_each(thrust::device, blocks_id.begin(), blocks_id.end(), [=] __device__ (const uint32_t b_id) {
+        thrust::for_each(thrust::cuda::par.on(stream), blocks_id.begin(), blocks_id.end(), [=] __device__ (const uint32_t b_id) {
             uint32_t prefix_id_begin = prefix_id_range_ptr[b_id], prefix_id_end = prefix_id_range_ptr[b_id + 1];
             uint32_t suffix_id_begin = suffix_id_range_ptr[b_id], suffix_id_end = suffix_id_range_ptr[b_id + 1];
             uint32_t prefix_id = prefix_id_begin, suffix_id = suffix_id_begin;
@@ -1096,14 +1142,14 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
             }
         });
 
-        thrust::for_each(thrust::device, suffix_reads_id, suffix_reads_id + cnt,
+        thrust::for_each(thrust::cuda::par.on(stream), suffix_reads_id, suffix_reads_id + cnt,
                          [=]__device__(uint32_t read_id){
                              if (next[read_id] != INVALID) offset[read_id] = off;
                          });
 
-        auto * new_end1 = thrust::remove_if(thrust::device, prefix_reads_id, prefix_reads_id + cnt,
+        auto * new_end1 = thrust::remove_if(thrust::cuda::par.on(stream), prefix_reads_id, prefix_reads_id + cnt,
                                             [=]__device__(uint32_t read_id){ return prev[read_id] != INVALID; });
-        thrust::remove_if(thrust::device, suffix_reads_id, suffix_reads_id + cnt,
+        thrust::remove_if(thrust::cuda::par.on(stream), suffix_reads_id, suffix_reads_id + cnt,
                           [=]__device__(uint32_t read_id) { return next[read_id] != INVALID; });
 
         cnt = new_end1 - prefix_reads_id;
@@ -1285,7 +1331,7 @@ void full_match_cpu(const char* N_reads_db_host, uint32_t * unmapping_N_reads_id
 }
 
 // template<size_t read_unit_size>
-void block_compress(const uint64_t * reads_db_host,
+void block_compress(uint64_t * reads_db_host,
                     std::vector<uint32_t> reads_id,
                     std::vector<char> N_reads_db_host,
                     std::vector<uint32_t> N_reads_id,
@@ -1300,11 +1346,13 @@ void block_compress(const uint64_t * reads_db_host,
         fs::remove_all(working_path);
         fs::create_directories(working_path);
     }
-    std::ofstream output_file(fs::path(param.working_dir) / (std::to_string(block_id) + block_archive_name_suffix));
+    std::ofstream output_file(fs::path(param.working_dir) / (param.random_block_prefix_id + "_" + std::to_string(block_id) + block_archive_name_suffix));
     uint32_t reads_count = reads_id.size() + N_reads_id.size();
     output_file.write(reinterpret_cast<const char*>(&reads_count), sizeof(uint32_t));
     cudaHostRegister(reads_id.data(), reads_id.size() * sizeof(uint32_t), cudaHostRegisterPortable);
-    cudaHostRegister(N_reads_db_host.data(), N_reads_db_host.size() * sizeof(char), cudaHostRegisterPortable);
+    if (!N_reads_db_host.empty()) {
+        cudaHostRegister(N_reads_db_host.data(), N_reads_db_host.size() * sizeof(char), cudaHostRegisterPortable);
+    }
     int device_id;
     bool finish;
     uint32_t * next_host, * prev_host;
@@ -1312,9 +1360,12 @@ void block_compress(const uint64_t * reads_db_host,
     uint32_t * ref_reads_id_host, * unmatch_reads_id_host;
     uint32_t ref_reads_count, unmatch_reads_count;
 
+    auto prefix_suffix_match_begin = std::chrono::steady_clock::now();
     LOCK_START
     {
         cudaSetDevice(device_id);
+        cudaStream_t stream;
+        cudaStreamCreate(&stream);
 
         uint64_t * reads_db_device;
         uint32_t * reads_id_device;
@@ -1326,13 +1377,13 @@ void block_compress(const uint64_t * reads_db_host,
         gpuErrorCheck(cudaMalloc((void**) &next, reads_count * sizeof(uint32_t)));
         gpuErrorCheck(cudaMalloc((void**) &prev, reads_count * sizeof(uint32_t)));
         gpuErrorCheck(cudaMalloc((void**) &offset, reads_count * sizeof(uint16_t)));
-        cudaMemcpy(reads_db_device, reads_db_host, reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(reads_id_device, reads_id.data(), reads_id.size() * sizeof(uint32_t), cudaMemcpyHostToDevice);
-        thrust::uninitialized_fill(thrust::device, next, next + reads_count, INVALID);
-        thrust::uninitialized_fill(thrust::device, prev, prev + reads_count, INVALID);
-        thrust::uninitialized_fill(thrust::device, offset, offset + reads_count, INVALOFF);
+        cudaMemcpyAsync(reads_db_device, reads_db_host, reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
+        cudaMemcpyAsync(reads_id_device, reads_id.data(), reads_id.size() * sizeof(uint32_t), cudaMemcpyHostToDevice, stream);
+        thrust::uninitialized_fill(thrust::cuda::par.on(stream), next, next + reads_count, INVALID);
+        thrust::uninitialized_fill(thrust::cuda::par.on(stream), prev, prev + reads_count, INVALID);
+        thrust::uninitialized_fill(thrust::cuda::par.on(stream), offset, offset + reads_count, INVALOFF);
 
-        thrust::sort(thrust::device, reads_id_device, reads_id_device + reads_id.size(),
+        thrust::sort(thrust::cuda::par.on(stream), reads_id_device, reads_id_device + reads_id.size(),
                      [reads_db_device, read_unit_size] __device__ (uint32_t a, uint32_t b) {
             for (size_t i = 0; i < read_unit_size; ++i) {
                 if (reads_db_device[a * read_unit_size + i] < reads_db_device[b * read_unit_size + i]) return true;
@@ -1341,7 +1392,7 @@ void block_compress(const uint64_t * reads_db_host,
             return false;
         });
 
-        thrust::for_each(thrust::device,
+        thrust::for_each(thrust::cuda::par.on(stream),
                          thrust::counting_iterator<uint32_t>(0),
                          thrust::counting_iterator<uint32_t>(reads_id.size() - 1),
                 [reads_db_device, reads_id_device, next, prev, offset, read_unit_size] __device__ (uint32_t i) {
@@ -1361,26 +1412,26 @@ void block_compress(const uint64_t * reads_db_host,
 
             uint32_t * value_array;
             uint32_t * suffix_reads_id;
-            uint32_t duplicate_count = thrust::count_if(thrust::device, next, next + reads_count, []__device__(uint32_t id) { return id != INVALID; });
+            uint32_t duplicate_count = thrust::count_if(thrust::cuda::par.on(stream), next, next + reads_count, []__device__(uint32_t id) { return id != INVALID; });
             uint32_t prefix_reads_count, suffix_reads_count;
             prefix_reads_count = suffix_reads_count = reads_id.size() - duplicate_count;
             gpuErrorCheck(cudaMalloc((void**) &value_array, prefix_reads_count * sizeof(uint32_t)));
             gpuErrorCheck(cudaMalloc((void**) &suffix_reads_id, suffix_reads_count * sizeof(uint32_t)));
 
-            thrust::copy_if(thrust::device, reads_id_device, reads_id_device + reads_id.size(), value_array,
+            thrust::copy_if(thrust::cuda::par.on(stream), reads_id_device, reads_id_device + reads_id.size(), value_array,
                             [prev]__device__(uint32_t id) { return prev[id] == INVALID; });
-            thrust::copy_if(thrust::device, reads_id_device, reads_id_device + reads_id.size(), suffix_reads_id,
+            thrust::copy_if(thrust::cuda::par.on(stream), reads_id_device, reads_id_device + reads_id.size(), suffix_reads_id,
                             [next]__device__(uint32_t id) { return next[id] == INVALID; });
 
             uint32_t * key_range;
             auto hash_size = get_hash_size(prefix_reads_count);
             auto hash_size_minus_one = hash_size - 1;
             gpuErrorCheck(cudaMalloc((void**) &key_range, (hash_size + 2) * sizeof(uint32_t)));
-            thrust::uninitialized_fill(thrust::device, key_range, key_range + hash_size + 2, 0);
+            thrust::uninitialized_fill(thrust::cuda::par.on(stream), key_range, key_range + hash_size + 2, 0);
 
             uint32_t * hash_key_array;
             gpuErrorCheck(cudaMalloc((void**) &hash_key_array, prefix_reads_count * sizeof(uint32_t)));
-            thrust::for_each(thrust::device,
+            thrust::for_each(thrust::cuda::par.on(stream),
                              thrust::counting_iterator<uint32_t>(0),
                              thrust::counting_iterator<uint32_t>(prefix_reads_count),
                              [reads_db_device, value_array, hash_key_array, kmer_index_pos, kmer_size, hash_size_minus_one, read_unit_size]
@@ -1388,25 +1439,25 @@ void block_compress(const uint64_t * reads_db_host,
                                  uint64_t kmer = extract_word_gpu(reads_db_device, value_array[i] * read_unit_size, kmer_index_pos, kmer_size);
                                  hash_key_array[i] = murmur_hash64(kmer) & hash_size_minus_one;
                              });
-            thrust::stable_sort_by_key(thrust::device, hash_key_array, hash_key_array + prefix_reads_count, value_array);
+            thrust::stable_sort_by_key(thrust::cuda::par.on(stream), hash_key_array, hash_key_array + prefix_reads_count, value_array);
 
             uint32_t * aux;
             gpuErrorCheck(cudaMalloc((void**) &aux, (prefix_reads_count + 1) * sizeof(uint32_t)));
-            thrust::sequence(thrust::device, aux, aux + prefix_reads_count + 1, 0);
+            thrust::sequence(thrust::cuda::par.on(stream), aux, aux + prefix_reads_count + 1, 0);
             thrust::pair<uint32_t*, uint32_t*> new_end =
-                    thrust::unique_by_key(thrust::device, hash_key_array, hash_key_array + prefix_reads_count, aux);
-            cudaMemcpy(new_end.second, &prefix_reads_count, sizeof(uint32_t), cudaMemcpyHostToDevice);
+                    thrust::unique_by_key(thrust::cuda::par.on(stream), hash_key_array, hash_key_array + prefix_reads_count, aux);
+            cudaMemcpyAsync(new_end.second, &prefix_reads_count, sizeof(uint32_t), cudaMemcpyHostToDevice, stream);
             uint32_t bucket_count = new_end.first - hash_key_array;
-            thrust::for_each(thrust::device, thrust::counting_iterator<uint32_t>(0), thrust::counting_iterator<uint32_t>(bucket_count),
+            thrust::for_each(thrust::cuda::par.on(stream), thrust::counting_iterator<uint32_t>(0), thrust::counting_iterator<uint32_t>(bucket_count),
                              [key_range, hash_key_array, aux]__device__(uint32_t i) {
                                  key_range[hash_key_array[i]] = aux[i + 1] - aux[i];
                              });
-            thrust::exclusive_scan(thrust::device, key_range, key_range + hash_size + 2, key_range, 0);
+            thrust::exclusive_scan(thrust::cuda::par.on(stream), key_range, key_range + hash_size + 2, key_range, 0);
             cudaFree(hash_key_array);
             cudaFree(aux);
 
             for (int off = 1; off < param.max_off; ++off) {
-                thrust::for_each(thrust::device, suffix_reads_id, suffix_reads_id + suffix_reads_count,
+                thrust::for_each(thrust::cuda::par.on(stream), suffix_reads_id, suffix_reads_id + suffix_reads_count,
                                  [=] __device__ (uint32_t suffix_read_id) {
                                      uint64_t kmer = extract_word_gpu(reads_db_device, suffix_read_id * read_unit_size, kmer_index_pos + off, kmer_size);
                                      uint32_t kmer_hash = murmur_hash64(kmer) & hash_size_minus_one;
@@ -1462,7 +1513,7 @@ void block_compress(const uint64_t * reads_db_host,
                                      }
                 });
 
-                suffix_reads_count = thrust::remove_if(thrust::device, suffix_reads_id, suffix_reads_id + suffix_reads_count,
+                suffix_reads_count = thrust::remove_if(thrust::cuda::par.on(stream), suffix_reads_id, suffix_reads_id + suffix_reads_count,
                                   [next] __device__ (uint32_t id) { return next[id] != INVALID; }) - suffix_reads_id;
             }
 
@@ -1474,9 +1525,9 @@ void block_compress(const uint64_t * reads_db_host,
         {
             uint8_t * res;
             gpuErrorCheck(cudaMalloc((void**)&res, reads_count * sizeof(uint8_t)));
-            thrust::uninitialized_fill(thrust::device, res, res + reads_count, true);
+            thrust::uninitialized_fill(thrust::cuda::par.on(stream), res, res + reads_count, true);
 
-            thrust::for_each(thrust::device, thrust::counting_iterator<uint32_t>(0), thrust::counting_iterator<uint32_t>(reads_count),
+            thrust::for_each(thrust::cuda::par.on(stream), thrust::counting_iterator<uint32_t>(0), thrust::counting_iterator<uint32_t>(reads_count),
                      [next, prev, offset, res] __device__ (uint32_t read_id) {
                          if (next[read_id] != INVALID && prev[read_id] != INVALID) return;
                          if (next[read_id] != INVALID && offset[read_id] == 0) return;
@@ -1484,7 +1535,7 @@ void block_compress(const uint64_t * reads_db_host,
                          res[read_id] = false;
                      });
 
-            thrust::for_each(thrust::device, thrust::counting_iterator<uint32_t>(0), thrust::counting_iterator<uint32_t>(reads_count),
+            thrust::for_each(thrust::cuda::par.on(stream), thrust::counting_iterator<uint32_t>(0), thrust::counting_iterator<uint32_t>(reads_count),
                              [next, prev, res] __device__ (uint32_t read_id) {
                                  if (!res[read_id]) {
                                      if (next[read_id] != INVALID) {
@@ -1498,52 +1549,63 @@ void block_compress(const uint64_t * reads_db_host,
                                  }
                              });
 
-            ref_reads_count = thrust::stable_partition(thrust::device, reads_id_device, reads_id_device + reads_id.size(),
+            ref_reads_count = thrust::stable_partition(thrust::cuda::par.on(stream), reads_id_device, reads_id_device + reads_id.size(),
                                              [res] __device__(uint32_t id) { return res[id]; }) - reads_id_device;
             unmatch_reads_count = reads_id.size() - ref_reads_count;
-            cudaMallocHost((void**) &ref_reads_id_host, ref_reads_count * sizeof(uint32_t));
+            cudaHostAlloc((void**) &ref_reads_id_host, ref_reads_count * sizeof(uint32_t), cudaHostAllocPortable);
             cudaHostAlloc((void**) &unmatch_reads_id_host, unmatch_reads_count * sizeof(uint32_t), cudaHostAllocPortable);
-            cudaMemcpy(ref_reads_id_host, reads_id_device, ref_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(unmatch_reads_id_host, reads_id_device + ref_reads_count, unmatch_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+            cudaMemcpyAsync(ref_reads_id_host, reads_id_device, ref_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(unmatch_reads_id_host, reads_id_device + ref_reads_count, unmatch_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+            cudaStreamSynchronize(stream);
             cudaFree(res);
 
             uint32_t * prefix_reads_id, * suffix_reads_id;
             uint32_t prefix_reads_count, suffix_reads_count;
-            prefix_reads_count = suffix_reads_count = thrust::count_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count,
+            prefix_reads_count = suffix_reads_count = thrust::count_if(thrust::cuda::par.on(stream), reads_id_device, reads_id_device + ref_reads_count,
                                      [next] __device__ (uint32_t id) { return next[id] == INVALID; });
             gpuErrorCheck(cudaMalloc((void**) &prefix_reads_id, prefix_reads_count * sizeof(uint32_t)));
             gpuErrorCheck(cudaMalloc((void**) &suffix_reads_id, suffix_reads_count * sizeof(uint32_t)));
-            thrust::copy_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count, prefix_reads_id,
+            thrust::copy_if(thrust::cuda::par.on(stream), reads_id_device, reads_id_device + ref_reads_count, prefix_reads_id,
                             [prev] __device__ (uint32_t id) { return prev[id] == INVALID; });
-            thrust::copy_if(thrust::device, reads_id_device, reads_id_device + ref_reads_count, suffix_reads_id,
+            thrust::copy_if(thrust::cuda::par.on(stream), reads_id_device, reads_id_device + ref_reads_count, suffix_reads_id,
                             [next] __device__ (uint32_t id) { return next[id] == INVALID; });
 
             full_match_gpu(reads_db_device, prefix_reads_id, suffix_reads_id, suffix_reads_count,
-                                           next, prev, offset, param, device_id);
+                                           next, prev, offset, param, device_id, stream);
             cudaFree(prefix_reads_id);
             cudaFree(suffix_reads_id);
         }
 
-        cudaMallocHost((void**) &next_host, reads_count * sizeof(uint32_t));
-        cudaMallocHost((void**) &prev_host, reads_count * sizeof(uint32_t));
-        cudaMallocHost((void**) &offset_host, reads_count * sizeof(uint16_t));
-        cudaMemcpy(next_host, next, reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-        cudaMemcpy(prev_host, prev, reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-        cudaMemcpy(offset_host, offset, reads_count * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+        cudaHostAlloc((void**) &next_host, reads_count * sizeof(uint32_t), cudaHostAllocPortable);
+        cudaHostAlloc((void**) &prev_host, reads_count * sizeof(uint32_t), cudaHostAllocPortable);
+        cudaHostAlloc((void**) &offset_host, reads_count * sizeof(uint16_t), cudaHostAllocPortable);
+        cudaMemcpyAsync(next_host, next, reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(prev_host, prev, reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(offset_host, offset, reads_count * sizeof(uint16_t), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
 
         cudaFree(reads_db_device);
         cudaFree(reads_id_device);
         cudaFree(next);
         cudaFree(prev);
         cudaFree(offset);
+        cudaStreamDestroy(stream);
     }
     LOCK_END
+    auto prefix_suffix_match_end = std::chrono::steady_clock::now();
+    printf("block %d prefix suffix match use %lf ms\n", block_id, std::chrono::duration<double,std::milli>(prefix_suffix_match_end-prefix_suffix_match_begin).count());
+
     cudaHostUnregister(reads_id.data());
     reads_id.clear();
     reads_id.shrink_to_fit();
 
     auto ref = std::make_unique<RefRecord>();
+    auto assembly_start = std::chrono::steady_clock::now();
     ref->assembly(reads_db_host, ref_reads_id_host, ref_reads_count, next_host, prev_host, offset_host, reads_count, param.read_len, param.read_unit_size);
+    auto assembly_end = std::chrono::steady_clock::now();
+    printf("block %d assembly use time : %lf ms\n", block_id, std::chrono::duration<double,std::milli>(assembly_end - assembly_start).count());
+    printf("block %d ref_reads_count : %u\n", block_id, ref_reads_count);
+
     ref->allocate_binary_ref();
     ref->compute_binary_ref();
     cudaFreeHost(next_host);
@@ -1555,31 +1617,44 @@ void block_compress(const uint64_t * reads_db_host,
     uint32_t unmapping_reads_count, unmapping_N_reads_count;
     std::vector<AlignmentRecord> map_record;
     std::vector<uint8_t> map_mis_cnt;
+    auto read_mapping_start = std::chrono::steady_clock::now();
     LOCK_START
     {
         cudaSetDevice(device_id);
-        ReadMapper read_mapper(device_id, ref->ref_string.size(), unmatch_reads_count, N_reads_id.size(), param);
+        cudaStream_t stream;
+        cudaStreamCreate(&stream);
+        ReadMapper read_mapper(device_id, ref->ref_string.size(), unmatch_reads_count, N_reads_id.size(), param, stream);
         read_mapper.init(reads_db_host, N_reads_db_host.data(), unmatch_reads_id_host, ref->binary_ref_string, ref->binary_ref_size);
         read_mapper.template index_and_mapping<false>(Param::k1, Param::ref_index_step1, Param::bucket_limit, Param::read_index_step1, Param::target_mismatch_count1);
         read_mapper.template index_and_mapping<true>(Param::k1, Param::ref_index_step1, Param::bucket_limit, Param::read_index_step1, Param::target_mismatch_count1);
         read_mapper.template index_and_mapping<false>(Param::k2, Param::ref_index_step2, Param::bucket_limit, Param::read_index_step2, Param::target_mismatch_count2);
         read_mapper.template index_and_mapping<true>(Param::k2, Param::ref_index_step2, Param::bucket_limit, Param::read_index_step2, Param::target_mismatch_count2);
         read_mapper.get_result(unmatch_reads_id_host, unmapping_reads_count, unmapping_N_reads_id, unmapping_N_reads_count, map_record, map_mis_cnt);
+        cudaStreamDestroy(stream);
     }
     LOCK_END
-    cudaHostUnregister(N_reads_db_host.data());
+    auto read_mapping_end = std::chrono::steady_clock::now();
+    printf("block %d read mapping use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(read_mapping_end - read_mapping_start).count());
+    printf("block %d read mapping reads count : %zu; unmapping_reads_count : %u; unmapping_N_reads_count : %u\n", block_id, unmatch_reads_count + N_reads_id.size(), unmapping_reads_count, unmapping_N_reads_count);
+
+    if (!N_reads_db_host.empty()) {
+        cudaHostUnregister(N_reads_db_host.data());
+    }
 
     auto unmapping_ref = std::make_unique<RefRecord>();
     auto unmapping_N_ref = std::make_unique<RefRecord>();
 
     auto unmapping_ref_construct = std::async(std::launch::async, [&] {
         if (unmapping_reads_count == 0) return;
+        auto unmapping_ref_start = std::chrono::steady_clock::now();
         uint64_t * reads_db_buffer;
         uint32_t * next_host, * prev_host;
         uint16_t * offset_host;
         LOCK_START
         {
             cudaSetDevice(device_id);
+            cudaStream_t stream;
+            cudaStreamCreate(&stream);
             uint64_t * reads_db;
             uint32_t * prefix_reads_id;
             uint32_t * suffix_reads_id;
@@ -1593,13 +1668,13 @@ void block_compress(const uint64_t * reads_db_host,
             gpuErrorCheck(cudaMalloc((void**) &prev_device, unmapping_reads_count * sizeof(uint32_t)));
             gpuErrorCheck(cudaMalloc((void**) &next_device, unmapping_reads_count * sizeof(uint32_t)));
             gpuErrorCheck(cudaMalloc((void**) &offset_device, unmapping_reads_count * sizeof(uint16_t)));
-            thrust::sequence(thrust::device, prefix_reads_id, prefix_reads_id + unmapping_reads_count, 0);
-            thrust::sequence(thrust::device, suffix_reads_id, suffix_reads_id + unmapping_reads_count, 0);
-            thrust::uninitialized_fill(thrust::device, prev_device, prev_device + unmapping_reads_count, INVALID);
-            thrust::uninitialized_fill(thrust::device, next_device, next_device + unmapping_reads_count, INVALID);
-            thrust::uninitialized_fill(thrust::device, offset_device, offset_device + unmapping_reads_count, INVALOFF);
+            thrust::sequence(thrust::cuda::par.on(stream), prefix_reads_id, prefix_reads_id + unmapping_reads_count, 0);
+            thrust::sequence(thrust::cuda::par.on(stream), suffix_reads_id, suffix_reads_id + unmapping_reads_count, 0);
+            thrust::uninitialized_fill(thrust::cuda::par.on(stream), prev_device, prev_device + unmapping_reads_count, INVALID);
+            thrust::uninitialized_fill(thrust::cuda::par.on(stream), next_device, next_device + unmapping_reads_count, INVALID);
+            thrust::uninitialized_fill(thrust::cuda::par.on(stream), offset_device, offset_device + unmapping_reads_count, INVALOFF);
 
-            cudaMallocHost((void**) &reads_db_buffer, unmapping_reads_count * read_unit_size * sizeof(uint64_t));
+            cudaHostAlloc((void**) &reads_db_buffer, unmapping_reads_count * read_unit_size * sizeof(uint64_t), cudaHostAllocPortable);
 #pragma omp parallel for
             for (size_t i = 0; i < unmapping_reads_count; ++i) {
 #pragma omp simd
@@ -1607,17 +1682,17 @@ void block_compress(const uint64_t * reads_db_host,
                     reads_db_buffer[i * read_unit_size + j] = reads_db_host[unmatch_reads_id_host[i] * read_unit_size + j];
                 }
             }
-            cudaMemcpy(reads_db, reads_db_buffer, unmapping_reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
-
+            cudaMemcpyAsync(reads_db, reads_db_buffer, unmapping_reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
             full_match_gpu(reads_db, prefix_reads_id, suffix_reads_id, unmapping_reads_count,
-                                           next_device, prev_device, offset_device, param, device_id);
+                                           next_device, prev_device, offset_device, param, device_id, stream);
 
-            cudaMallocHost((void**) &prev_host, unmapping_reads_count * sizeof(uint32_t));
-            cudaMallocHost((void**) &next_host, unmapping_reads_count * sizeof(uint32_t));
-            cudaMallocHost((void**) &offset_host, unmapping_reads_count * sizeof(uint16_t));
-            cudaMemcpy(next_host, next_device, unmapping_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(prev_host, prev_device, unmapping_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(offset_host, offset_device, unmapping_reads_count * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+            cudaHostAlloc((void**) &prev_host, unmapping_reads_count * sizeof(uint32_t), cudaHostAllocPortable);
+            cudaHostAlloc((void**) &next_host, unmapping_reads_count * sizeof(uint32_t), cudaHostAllocPortable);
+            cudaHostAlloc((void**) &offset_host, unmapping_reads_count * sizeof(uint16_t), cudaHostAllocPortable);
+            cudaMemcpyAsync(next_host, next_device, unmapping_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(prev_host, prev_device, unmapping_reads_count * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(offset_host, offset_device, unmapping_reads_count * sizeof(uint16_t), cudaMemcpyDeviceToHost, stream);
+            cudaStreamSynchronize(stream);
 
             cudaFree(reads_db);
             cudaFree(prefix_reads_id);
@@ -1625,6 +1700,7 @@ void block_compress(const uint64_t * reads_db_host,
             cudaFree(prev_device);
             cudaFree(next_device);
             cudaFree(offset_device);
+            cudaStreamDestroy(stream);
         }
         LOCK_END
 
@@ -1642,12 +1718,17 @@ void block_compress(const uint64_t * reads_db_host,
             unmapping_ref->record[i].read_id = unmatch_reads_id_host[id];
         }
         cudaFreeHost(unmatch_reads_id_host);
+        auto unmapping_ref_end = std::chrono::steady_clock::now();
+        printf("block %d unmapping ref construct use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(unmapping_ref_end - unmapping_ref_start).count());
     });
 
     auto unmapping_N_ref_construct = std::async(std::launch::async, [&] {
         if (unmapping_N_reads_count == 0) return ;
+        auto unmapping_N_ref_start = std::chrono::steady_clock::now();
         full_match_cpu(N_reads_db_host.data(), unmapping_N_reads_id, unmapping_N_reads_count, N_reads_id.size(), param, unmapping_N_ref.get());
         cudaFreeHost(unmapping_N_reads_id);
+        auto unmapping_N_ref_end = std::chrono::steady_clock::now();
+        printf("block %d unmapping N ref construct use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(unmapping_N_ref_end - unmapping_N_ref_start).count());
     });
 
     std::vector<uint64_t> id_to_pos;
@@ -1678,7 +1759,7 @@ void block_compress(const uint64_t * reads_db_host,
             });
         }
 
-        uint64_t last_pos = 0;
+        // uint64_t last_pos = 0;
         size_t mismatch_base_context[256][256] = {0};
         std::string mismatch_base_context_stream;
         std::string mismatch_base_stream;
@@ -1686,9 +1767,38 @@ void block_compress(const uint64_t * reads_db_host,
         std::vector<uint16_t> reads_off_stream;
         std::vector<std::vector<uint16_t>> mismatch_offset_stream(param.max_mismatch_count + 1);
 
-        strand_id_stream.reserve(record.size());
-        if (!param.is_preserve_order) reads_off_stream.reserve(record.size());
+        std::vector<uint32_t> mismatch_base_idx(mis_cnt.size());
+        thrust::exclusive_scan(thrust::omp::par, mis_cnt.begin(), mis_cnt.end(), mismatch_base_idx.begin(), 0u);
+        mismatch_base_context_stream.resize(mismatch_base_idx.back() + mis_cnt.back());
+        mismatch_base_stream.resize(mismatch_base_idx.back() + mis_cnt.back());
 
+        strand_id_stream.resize(record.size());
+        if (!param.is_preserve_order) reads_off_stream.resize(record.size());
+        if (!param.is_preserve_order && param.is_paired_end) pe_reads_order.resize(record.size());
+
+        std::vector<uint32_t> mismatch_offset_idx(mis_cnt.size());
+        std::vector<size_t>   mismatch_count_stat(param.max_mismatch_count + 1, 0);
+        for (size_t i = 0; i < record.size(); ++i) {
+            if (mis_cnt[i]) {
+                if (mis_cnt[i] == 1)      mismatch_offset_idx[i] = (2 * mismatch_count_stat[mis_cnt[i]]);
+                else if (mis_cnt[i] == 2) mismatch_offset_idx[i] = (3 * mismatch_count_stat[mis_cnt[i]]);
+                else                      mismatch_offset_idx[i] = ((mis_cnt[i] + 2) * mismatch_count_stat[mis_cnt[i]]);
+                mismatch_count_stat[mis_cnt[i]]++;
+            }
+        }
+        for (size_t i = 1; i <= param.max_mismatch_count; ++i) {
+            if (i == 1)      mismatch_offset_stream[i].resize(2 * mismatch_count_stat[i]);
+            else if (i == 2) mismatch_offset_stream[i].resize(3 * mismatch_count_stat[i]);
+            else             mismatch_offset_stream[i].resize((i + 2) * mismatch_count_stat[i]);
+        }
+        printf("block %d mismatch_count_stat {\n", block_id);
+        for (size_t i = 1; i <= param.max_mismatch_count; ++i) {
+            printf("\t%zu\t%zu\n", i, mismatch_count_stat[i]);
+        }
+        printf("}\n");
+
+        auto stream_generate_start = std::chrono::steady_clock::now();
+#pragma omp parallel for
         for (size_t i = 0; i < record.size(); ++i) {
             const uint32_t read_id = record[i].read_id;
             const uint64_t is_contain_N = record[i].is_contain_N;
@@ -1704,18 +1814,21 @@ void block_compress(const uint64_t * reads_db_host,
             } else {
                 if (param.is_paired_end) {
                     if (is_contain_N) {
-                        pe_reads_order.push_back(N_reads_id[read_id]);
+                        pe_reads_order[i] = (N_reads_id[read_id]);
                     } else {
-                        pe_reads_order.push_back(read_id);
+                        pe_reads_order[i] = (read_id);
                     }
                 }
-                reads_off_stream.push_back(pos - last_pos);
-                last_pos = pos;
+                reads_off_stream[i] = (i == 0) ? 0 : (pos - record[i - 1].pos);
+                // last_pos = pos;
             }
-            if (strand_id == 0) strand_id_stream += "0"; else strand_id_stream += "1";
+            // if (strand_id == 0) strand_id_stream += "0"; else strand_id_stream += "1";
+            strand_id_stream[i] = char('0' + strand_id);
 
             if (mismatch_count > 0) {
                 std::vector<uint16_t> mismatch_offset;
+                mismatch_offset.reserve(mismatch_count);
+                auto idx = mismatch_base_idx[i];
                 if (!is_contain_N) {
                     for (size_t p = 0; p < param.read_len; ++p) {
                         uint64_t base_offset = (strand_id == 0) ? (p) : (param.read_len - 1 - p);
@@ -1723,9 +1836,13 @@ void block_compress(const uint64_t * reads_db_host,
                         if (strand_id == 1) read_base = reverse_dna_base_cpu(read_base);
                         if (ref->ref_string[pos + p] != read_base) {
                             // mismatch_count++;
-                            mismatch_base_context_stream += ref->ref_string[pos + p];
-                            mismatch_base_stream += read_base;
-                            mismatch_base_context[ref->ref_string[pos + p]][read_base]++;
+                            mismatch_base_context_stream [idx] = ref->ref_string[pos + p];
+                            mismatch_base_stream [idx] = read_base;
+                            idx++;
+//                            #pragma omp critical
+//                            {
+//                                mismatch_base_context[ref->ref_string[pos + p]][read_base]++;
+//                            }
                             mismatch_offset.push_back(p);
                         }
                     }
@@ -1736,20 +1853,25 @@ void block_compress(const uint64_t * reads_db_host,
                         if (strand_id == 1) read_base = reverse_dna_base_cpu(read_base);
                         if (ref->ref_string[pos + p] != read_base) {
                             // mismatch_count++;
-                            mismatch_base_context_stream += ref->ref_string[pos + p];
-                            mismatch_base_stream += read_base;
-                            mismatch_base_context[ref->ref_string[pos + p]][read_base]++;
+                            mismatch_base_context_stream [idx] = ref->ref_string[pos + p];
+                            mismatch_base_stream [idx] = read_base;
+                            idx++;
+//                            #pragma omp critical
+//                            {
+//                                mismatch_base_context[ref->ref_string[pos + p]][read_base]++;
+//                            }
                             mismatch_offset.push_back(p);
                         }
                     }
                 }
 
+                idx = mismatch_offset_idx[i];
                 if (mismatch_offset[0] < (param.read_len - 1 - mismatch_offset[mismatch_count - 1])) { // left to right
-                    mismatch_offset_stream[mismatch_count].push_back(0);
-                    mismatch_offset_stream[mismatch_count].push_back(mismatch_offset[0]);
+                    mismatch_offset_stream[mismatch_count][idx++] = (0);
+                    mismatch_offset_stream[mismatch_count][idx++] = (mismatch_offset[0]);
                     if (mismatch_count > 1) {
                         if (mismatch_count == 2) {
-                            mismatch_offset_stream[mismatch_count].push_back(mismatch_offset[1] - mismatch_offset[0] - 1);
+                            mismatch_offset_stream[mismatch_count][idx++] = (mismatch_offset[1] - mismatch_offset[0] - 1);
                         } else {
                             uint32_t min_off = std::numeric_limits<uint32_t>::max();
                             for (size_t m = 1; m < mismatch_count; ++m) {
@@ -1757,18 +1879,18 @@ void block_compress(const uint64_t * reads_db_host,
                                     min_off = mismatch_offset[m] - mismatch_offset[m - 1];
                                 }
                             }
-                            mismatch_offset_stream[mismatch_count].push_back(min_off - 1);
+                            mismatch_offset_stream[mismatch_count][idx++] = (min_off - 1);
                             for (size_t m = 1; m < mismatch_count; ++m) {
-                                mismatch_offset_stream[mismatch_count].push_back(mismatch_offset[m] - mismatch_offset[m - 1] - min_off);
+                                mismatch_offset_stream[mismatch_count][idx++] = (mismatch_offset[m] - mismatch_offset[m - 1] - min_off);
                             }
                         }
                     }
                 } else { // right to left
-                    mismatch_offset_stream[mismatch_count].push_back(1);
-                    mismatch_offset_stream[mismatch_count].push_back(param.read_len - 1 - mismatch_offset[mismatch_count - 1]);
+                    mismatch_offset_stream[mismatch_count][idx++] = (1);
+                    mismatch_offset_stream[mismatch_count][idx++] = (param.read_len - 1 - mismatch_offset[mismatch_count - 1]);
                     if (mismatch_count > 1) {
                         if (mismatch_count == 2) {
-                            mismatch_offset_stream[mismatch_count].push_back(mismatch_offset[1] - mismatch_offset[0] - 1);
+                            mismatch_offset_stream[mismatch_count][idx++] = (mismatch_offset[1] - mismatch_offset[0] - 1);
                         } else {
                             uint32_t min_off = std::numeric_limits<uint32_t>::max();
                             for (size_t m = mismatch_count - 1; m > 0; --m) {
@@ -1776,9 +1898,9 @@ void block_compress(const uint64_t * reads_db_host,
                                     min_off = mismatch_offset[m] - mismatch_offset[m - 1];
                                 }
                             }
-                            mismatch_offset_stream[mismatch_count].push_back(min_off - 1);
+                            mismatch_offset_stream[mismatch_count][idx++] = (min_off - 1);
                             for (size_t m = mismatch_count - 1; m > 0; --m) {
-                                mismatch_offset_stream[mismatch_count].push_back(mismatch_offset[m] - mismatch_offset[m - 1] - min_off);
+                                mismatch_offset_stream[mismatch_count][idx++] = (mismatch_offset[m] - mismatch_offset[m - 1] - min_off);
                             }
                         }
                     }
@@ -1786,6 +1908,15 @@ void block_compress(const uint64_t * reads_db_host,
             }
         }
         record.clear(); record.shrink_to_fit();
+        mismatch_base_idx.clear(); mismatch_base_idx.shrink_to_fit();
+        mismatch_offset_idx.clear(); mismatch_offset_idx.shrink_to_fit();
+        auto stream_generate_end = std::chrono::steady_clock::now();
+        printf("block %d stream generate use time : %lf ms\n", block_id, std::chrono::duration<double, std::milli>(stream_generate_end - stream_generate_start).count());
+
+        auto other_stream_compress_start = std::chrono::steady_clock::now();
+        for (size_t i = 0; i < mismatch_base_stream.size(); ++i) {
+            mismatch_base_context[mismatch_base_context_stream[i]][mismatch_base_stream[i]]++;
+        }
 
         auto mismatch_base_recode = [&] (char ctx, std::array<char, 4> dest) {
             std::array<size_t, 4> index = {0,1,2,3};
@@ -1852,10 +1983,13 @@ void block_compress(const uint64_t * reads_db_host,
                 mismatch_offset_compress<65536>(mismatch_offset_stream[i], i, working_path / ("mismatch_off_" + std::to_string(i)));
             }
         }
+        auto other_stream_compress_end = std::chrono::steady_clock::now();
+        printf("block %d other stream compress use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(other_stream_compress_end - other_stream_compress_start).count());
     }
 
     unmapping_ref_construct.get();
     unmapping_N_ref_construct.get();
+    cudaFreeHost(reads_db_host); // After stream generation, free reads_db_host
 
     if (!param.is_preserve_order) {
         std::vector<uint16_t> reads_off_stream; // may be empty
@@ -1912,6 +2046,7 @@ void block_compress(const uint64_t * reads_db_host,
         output_file.write(reinterpret_cast<const char*>(&isJoinRefLengthStd), sizeof(uint8_t));
     }
     auto id_to_pos_compress_future = std::async(std::launch::async, [&] {
+        auto id_to_pos_compress_start = std::chrono::steady_clock::now();
         if (param.is_preserve_order) {
             if (!param.is_paired_end) {
                 std::ofstream id_pos_file(working_path / "id_pos.bin");
@@ -1933,30 +2068,47 @@ void block_compress(const uint64_t * reads_db_host,
             id_to_pos.clear();
             id_to_pos.shrink_to_fit();
         }
+        auto id_to_pos_compress_end = std::chrono::steady_clock::now();
+        printf("block %d id_to_pos compress use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(id_to_pos_compress_end - id_to_pos_compress_start).count());
     });
 
     {
+        printf("block %d Before RefMatcher: ref_length %zu; unmapping_ref_length %zu; unmapping_N_ref_length %zu; sum %zu\n",
+               block_id, ref->ref_string.size(), unmapping_ref->ref_string.size(), unmapping_N_ref->ref_string.size(),
+               ref->ref_string.size() + unmapping_ref->ref_string.size() + unmapping_N_ref->ref_string.size());
         uint8_t isRefLengthStd = ref->ref_string.size() <= UINT32_MAX;
         output_file.write(reinterpret_cast<const char*>(&isRefLengthStd), sizeof(uint8_t));
 
         std::string unmapRefMapOff, unmapRefMapLen;
         std::string unmapNRefMapOff, unmapNRefMapLen;
         std::string refMapOff, refMapLen;
+        auto ref_match_start = std::chrono::steady_clock::now();
         LOCK_START
         {
             cudaSetDevice(device_id);
-            RefMatcher matcher(ref->ref_string.size(), device_id, param);
+            cudaStream_t stream;
+            cudaStreamCreate(&stream);
+            RefMatcher matcher(ref->ref_string.size(), device_id, param, stream);
             matcher.init(ref->binary_ref_string, ref->binary_ref_size);
             if (!unmapping_ref->ref_string.empty()) {
                 matcher.match(unmapping_ref.get(), unmapRefMapOff, unmapRefMapLen, false, false);
             }
+            printf("unmapping_ref match finish\n");
             if (!unmapping_N_ref->ref_string.empty()) {
                 matcher.match(unmapping_N_ref.get(), unmapNRefMapOff, unmapNRefMapLen, true, false);
             }
+            printf("unmapping_N_ref match finish\n");
             matcher.match(ref.get(), refMapOff, refMapLen, false, true);
+            printf("ref match finish\n");
+            cudaStreamDestroy(stream);
             // matcher.finish_match();
         }
         LOCK_END
+        auto ref_match_end = std::chrono::steady_clock::now();
+        printf("block %d ref match use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(ref_match_end - ref_match_start).count());
+        printf("block %d After RefMatcher: ref_length %zu; unmapping_ref_length %zu; unmapping_N_ref_length %zu; sum %zu\n",
+               block_id, ref->ref_string.size(), unmapping_ref->ref_string.size(), unmapping_N_ref->ref_string.size(),
+               ref->ref_string.size() + unmapping_ref->ref_string.size() + unmapping_N_ref->ref_string.size());
 
         double estimated_ref_offset_ratio = simpleUintCompressionEstimate(ref->ref_string.size(), isRefLengthStd ? UINT32_MAX : UINT64_MAX);
         const int ref_offset_data_period_code = isRefLengthStd ? 2 : 3;
@@ -1973,6 +2125,7 @@ void block_compress(const uint64_t * reads_db_host,
     }
 
     {
+        auto ref_compress_start = std::chrono::steady_clock::now();
         uint64_t ref_size = ref->ref_string.size();
         uint64_t unmapping_ref_size = unmapping_ref->ref_string.size();
         uint64_t unmapping_N_ref_size = unmapping_N_ref->ref_string.size();
@@ -1997,6 +2150,8 @@ void block_compress(const uint64_t * reads_db_host,
         ref->ref_string.shrink_to_fit();
 
         lzma2::lzma2_compress((working_path / "ref_var_len_encode.bin").c_str(), (working_path / "ref.lzma2").c_str(), param.flzma2_level, param.flzma2_thread_num);
+        auto ref_compress_end = std::chrono::steady_clock::now();
+        printf("block %d ref compress use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(ref_compress_end - ref_compress_start).count());
     }
 
     auto read_file_and_output = [&](const fs::path &filename) {
@@ -2037,11 +2192,41 @@ void block_compress(const uint64_t * reads_db_host,
 
 }
 
-// template<size_t read_unit_size>
-void process(const Param& param) {
-    int device_count;
+
+void encode (char * buffer, const Param& param, size_t buffer_reads_count, size_t start_read_index,
+                uint64_t * reads_db_host, size_t read_unit_size) {
+    cudaSetDevice(0);
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    uint16_t read_len = param.read_len;
+    uint64_t * binary_reads_buffer;
+    gpuErrorCheck(cudaMalloc((void**) &binary_reads_buffer, buffer_reads_count * read_unit_size * sizeof(uint64_t)));
+    thrust::uninitialized_fill(thrust::cuda::par.on(stream), binary_reads_buffer, binary_reads_buffer + buffer_reads_count * read_unit_size, 0);
+    thrust::for_each(thrust::cuda::par.on(stream),
+                     thrust::counting_iterator<uint32_t>(0),
+                     thrust::counting_iterator<uint32_t>(buffer_reads_count),
+                     [buffer, binary_reads_buffer, read_len, read_unit_size = param.read_unit_size] __device__ (uint32_t i) {
+                         uint64_t idx1 = 0, c;
+                         uint8_t idx2 = 0;
+                         for (size_t j = i * read_len; j < (i + 1) * read_len; ++j) {
+                             c = base_encode_table_mgpu[buffer[j]] & 0x03U;
+                             binary_reads_buffer[i * read_unit_size + idx1] |= (c << (62U - idx2));
+                             idx2 = (idx2 + 2U) & 0x3FU;
+                             if (idx2 == 0) {
+                                 idx1++;
+                             }
+                         }
+                     });
+    cudaMemcpyAsync(reads_db_host + start_read_index * read_unit_size, binary_reads_buffer, buffer_reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+    cudaFree(binary_reads_buffer);
+    cudaFree(buffer);
+    cudaStreamDestroy(stream);
+};
+
+
+void get_device_count_and_init(int & device_count) {
     gpuErrorCheck(cudaGetDeviceCount(&device_count));
-    printf("GPU device count : %d\n", device_count);
     auto gpu_context_init_future = std::async(std::launch::async, [device_count]() {
 #pragma omp parallel num_threads(device_count)
         {
@@ -2050,264 +2235,32 @@ void process(const Param& param) {
         }
         printf("gpu context init finish\n");
     });
-
-    uint64_t * reads_db_host;
-    size_t reads_count = 0;
-    uint8_t blocks_count = 0;
-    size_t reads_db_host_capacity, fastq_bytes, block_bytes;
-    if (!param.is_paired_end) {
-        fastq_bytes = fs::file_size(param.f1_path);
-        block_bytes = (size_t)((double) fastq_bytes * param.block_ratio);
-        reads_db_host_capacity = (double) fastq_bytes * param.reads_data_ratio / param.read_len * param.read_unit_size * sizeof(uint64_t);
-        printf("reads_db_host_capacity : %zu bytes\n", reads_db_host_capacity);
-        cudaHostAlloc((void **) &reads_db_host, reads_db_host_capacity, cudaHostAllocPortable);
-    } else {
-        fastq_bytes = fs::file_size(param.f1_path);
-        if (fastq_bytes != fs::file_size(param.f2_path)) throw std::runtime_error("paired-end file size isn't equal");
-        block_bytes = (size_t)(2 * (double) fastq_bytes * param.block_ratio);
-        reads_db_host_capacity = 2 * (double) fastq_bytes * param.reads_data_ratio / param.read_len * param.read_unit_size * sizeof(uint64_t);
-        printf("reads_db_host_capacity : %zu bytes\n", reads_db_host_capacity);
-        cudaHostAlloc((void **) &reads_db_host, reads_db_host_capacity, cudaHostAllocPortable);
-    }
-
-    std::vector<std::future<void>> block_compress_future;
-    {
-        cudaSetDevice(0);
-        auto encode = [reads_db_host, read_unit_size = param.read_unit_size](char * buffer, uint8_t * contain_N_flags, const Param& param, size_t buffer_reads_count, size_t start_read_index) {
-            cudaSetDevice(0);
-            uint16_t read_len = param.read_len;
-            uint64_t * binary_reads_buffer;
-            gpuErrorCheck(cudaMalloc((void**) &binary_reads_buffer, buffer_reads_count * read_unit_size * sizeof(uint64_t)));
-            thrust::for_each(thrust::device,
-                             thrust::counting_iterator<uint32_t>(0),
-                             thrust::counting_iterator<uint32_t>(buffer_reads_count),
-                             [buffer, contain_N_flags, binary_reads_buffer, read_len, read_unit_size = param.read_unit_size] __device__ (uint32_t i) {
-                                 if (contain_N_flags[i]) return;
-                                 uint64_t idx1 = 0, c;
-                                 uint8_t idx2 = 0;
-                                 for (size_t j = i * read_len; j < (i + 1) * read_len; ++j) {
-                                     c = base_encode_table_mgpu[buffer[j]] & 0x03U;
-                                     binary_reads_buffer[i * read_unit_size + idx1] |= (c << (62U - idx2));
-                                     idx2 = (idx2 + 2U) & 0x3FU;
-                                     if (idx2 == 0) {
-                                         idx1++;
-                                     }
-                                 }
-                             });
-            cudaMemcpy(reads_db_host + start_read_index * read_unit_size, binary_reads_buffer, buffer_reads_count * read_unit_size * sizeof(uint64_t), cudaMemcpyDeviceToHost);
-            cudaFree(binary_reads_buffer);
-            cudaFree(buffer);
-            cudaFree(contain_N_flags);
-        };
-
-        mio::mmap_source io_buffer, io_buffer_2;
-        const size_t io_buffer_size = 50 * 1000 * 1000; // 50MB
-        const size_t io_buffer_reads_size = io_buffer_size / 2;
-        const size_t io_buffer_reads_count = io_buffer_reads_size / param.read_len;
-        char * reads_db_buffer;
-        cudaMallocHost((void**) &reads_db_buffer, io_buffer_reads_size);
-        uint8_t * buffer_contain_N_flags;
-        cudaMallocHost((void**) &buffer_contain_N_flags, io_buffer_reads_count);
-
-        std::vector<std::future<void>> encode_futures;
-        std::vector<uint32_t> reads_id, N_reads_id;
-        std::vector<char> N_reads_db_host;
-        size_t total_read_bytes = 0, last_total_read_bytes = 0, last_reads_count = 0;
-        uint32_t global_reads_id = 0;
-
-        while(total_read_bytes < fastq_bytes) {
-            std::error_code error;
-            if (!param.is_paired_end) {
-                io_buffer.map(param.f1_path, total_read_bytes, std::min(io_buffer_size, fastq_bytes - total_read_bytes), error);
-            } else {
-                io_buffer.map(param.f1_path, total_read_bytes, std::min(io_buffer_size / 2, fastq_bytes - total_read_bytes), error);
-                io_buffer_2.map(param.f2_path, total_read_bytes, std::min(io_buffer_size / 2, fastq_bytes - total_read_bytes), error);
-            }
-            auto buffer_end = io_buffer.size();
-            total_read_bytes += buffer_end;
-            if (total_read_bytes < fastq_bytes) {
-                long first_line_len = 0;
-                if (io_buffer[0] != '@') throw std::runtime_error("io_buffer doesn't start with @");
-                while (io_buffer[first_line_len] != '\n') first_line_len++;
-                auto new_buffer_end = buffer_end - first_line_len;
-                int equal_count = 0;
-                while(new_buffer_end > 0) {
-                    if (io_buffer[new_buffer_end - 1] == '\n' && io_buffer[new_buffer_end] == '@') { // id or qual
-                        for (size_t j = 0, k = new_buffer_end; j < first_line_len; j++, k++) {
-                            if (io_buffer[j] == io_buffer[k]) {
-                                equal_count++;
-                                if (equal_count > 5) {
-                                    goto get_end_finish;
-                                }
-                            } else {
-                                equal_count = 0;
-                            }
-                        }
-                    }
-                    new_buffer_end--;
-                }
-                get_end_finish: ;
-                total_read_bytes -= (buffer_end - new_buffer_end);
-                buffer_end = new_buffer_end;
-            }
-            char base;
-            long i = 0, j = 0;
-            bool contain_N_flag = false;
-            size_t buffer_reads_count = 0;
-
-            while (i < buffer_end) {
-                while(io_buffer[i++] != '\n');
-                auto seq_start = i;
-                while((base = io_buffer[i]) != '\n') {
-                    if (base == 'N') contain_N_flag = true;
-                    i++;
-                }
-                if (param.read_len != (i - seq_start)) throw std::runtime_error("read length isn't fix");
-
-                if (contain_N_flag) {
-                    N_reads_id.push_back(global_reads_id++);
-                    N_reads_db_host.insert(N_reads_db_host.end(), io_buffer.data() + seq_start, io_buffer.data() + seq_start + param.read_len);
-                } else {
-                    reads_id.push_back(global_reads_id++);
-                    std::memcpy(reads_db_buffer + buffer_reads_count * param.read_len, io_buffer.data() + seq_start, param.read_len);
-                }
-                buffer_contain_N_flags[buffer_reads_count++] = contain_N_flag;
-                contain_N_flag = false;
-                i++;
-                while(io_buffer[i++] != '\n');
-                while(io_buffer[i++] != '\n');
-
-                if (param.is_paired_end) {
-                    while(io_buffer_2[j++] != '\n');
-                    seq_start = j;
-                    while ((base = io_buffer_2[j]) != '\n') {
-                        if (base == 'N') contain_N_flag = true;
-                        j++;
-                    }
-                    if (param.read_len != (j - seq_start)) throw std::runtime_error("read length isn't fix");
-                    if (contain_N_flag) {
-                        N_reads_id.push_back(global_reads_id++);
-                        N_reads_db_host.insert(N_reads_db_host.end(), io_buffer_2.data() + seq_start, io_buffer_2.data() + seq_start + param.read_len);
-                    } else {
-                        reads_id.push_back(global_reads_id++);
-                        std::memcpy(reads_db_buffer + buffer_reads_count * param.read_len, io_buffer_2.data() + seq_start, param.read_len);
-                    }
-                    buffer_contain_N_flags[buffer_reads_count++] = contain_N_flag;
-                    contain_N_flag = false;
-                    j++;
-                    while(io_buffer_2[j++] != '\n');
-                    while(io_buffer_2[j++] != '\n');
-                }
-            }
-
-            char * reads_db_buffer_device;
-            uint8_t * buffer_contain_N_flags_device;
-            gpuErrorCheck(cudaMalloc((void**) &reads_db_buffer_device, buffer_reads_count * param.read_len));
-            gpuErrorCheck(cudaMalloc((void**) &buffer_contain_N_flags_device, buffer_reads_count * sizeof(uint8_t)));
-            cudaMemcpy(reads_db_buffer_device, reads_db_buffer, buffer_reads_count * param.read_len, cudaMemcpyHostToDevice);
-            cudaMemcpy(buffer_contain_N_flags_device, buffer_contain_N_flags, buffer_reads_count * sizeof(uint8_t), cudaMemcpyHostToDevice);
-            encode_futures.push_back(std::async(std::launch::async, encode, reads_db_buffer_device, buffer_contain_N_flags_device, param, buffer_reads_count, reads_count));
-            reads_count += buffer_reads_count;
-            if (reads_count * param.read_unit_size * sizeof(uint64_t) >= reads_db_host_capacity) {
-                throw std::runtime_error("reads_db_host overflow");
-            }
-
-            size_t block_read_bytes = total_read_bytes - last_total_read_bytes;
-            if (param.is_paired_end) block_read_bytes *= 2;
-            if (block_read_bytes > block_bytes) {
-                for (auto & f : encode_futures) f.get(); // force encode finish
-                encode_futures.clear();
-                block_compress_future.push_back(std::async(std::launch::async, block_compress,
-                        reads_db_host + last_reads_count * param.read_unit_size, std::move(reads_id),
-                        std::move(N_reads_db_host), std::move(N_reads_id), param, blocks_count++, device_count));
-                if (blocks_count >= UINT8_MAX) {
-                    throw std::runtime_error("too many blocks");
-                }
-                global_reads_id = 0;
-                last_total_read_bytes = total_read_bytes;
-                last_reads_count = reads_count;
-            }
-        }
-        size_t block_read_bytes = total_read_bytes - last_total_read_bytes;
-        if (block_read_bytes > 0) {
-            for (auto & f : encode_futures) f.get();
-            encode_futures.clear();
-            block_compress_future.push_back(std::async(std::launch::async, block_compress,
-                                                       reads_db_host + last_reads_count * param.read_unit_size, std::move(reads_id),
-                                                       std::move(N_reads_db_host), std::move(N_reads_id), param, blocks_count++, device_count));
-            if (blocks_count >= UINT8_MAX) {
-                throw std::runtime_error("too many blocks");
-            }
-            global_reads_id = 0;
-            last_total_read_bytes = total_read_bytes;
-            last_reads_count = reads_count;
-        }
-
-        printf("reads count : %zu \n", reads_count);
-        printf("block count : %u \n", blocks_count);
-        cudaFreeHost(reads_db_buffer);
-        cudaFreeHost(buffer_contain_N_flags);
-    }
-
-    fs::path output_path = fs::path(param.working_dir) / fs::path(param.output_name + archive_name_suffix);
-    std::ofstream output_file(output_path);
-    output_file.write(reinterpret_cast<const char*>(&param.is_preserve_order), sizeof(uint8_t));
-    output_file.write(reinterpret_cast<const char*>(&param.is_paired_end), sizeof(uint8_t));
-    output_file.write(reinterpret_cast<const char*>(&param.read_len), sizeof(uint16_t));
-    output_file.write(reinterpret_cast<const char*>(&blocks_count), sizeof(uint8_t));
-
-    printf("waiting block compress ...\n");
-    for (size_t b_id = 0; b_id < block_compress_future.size(); ++b_id) {
-        block_compress_future[b_id].get();
-        std::vector<char> block_compressed_data;
-        read_vector_from_binary_file(block_compressed_data, fs::path(param.working_dir) / (std::to_string(b_id) + block_archive_name_suffix));
-        PgSAHelpers::writeArray(output_file, block_compressed_data.data(), block_compressed_data.size());
-        fs::remove(fs::path(param.working_dir) / (std::to_string(b_id) + block_archive_name_suffix));
-        printf("block %zu compress finish, compressed size : %zu\n", b_id, block_compressed_data.size());
-    }
-    cudaFreeHost(reads_db_host);
-
-    output_file.flush();
-    printf("archive size : %zu bytes \n", fs::file_size(output_path));
-    int status = std::system(("rm -rf " + param.working_parent_path).c_str());
-    if (status != 0) {
-        printf("remove tmp directory fail\n");
-    }
 }
 
-void compress(Param& param) {
-    // size_t read_unit_size = 0;
-    {
-        size_t total_size = 0;
-        std::ifstream input_fastq(param.f1_path);
-        std::string line;
-        std::getline(input_fastq, line);
-        total_size += line.size();
-        std::getline(input_fastq, line);
-        total_size += line.size();
-        param.read_len = line.size();
-        param.read_unit_size = ceil<32>(param.read_len);
-        std::getline(input_fastq, line);
-        total_size += line.size();
-        std::getline(input_fastq, line);
-        total_size += line.size();
-        printf("read length : %d\n", param.read_len);
-        total_size += 4;
-        param.reads_data_ratio = double(param.read_len + 1) / double(total_size);
-    }
-
-    param.max_off = param.read_len * 65 / 100;
-    param.kmer_size = 32;
-    if (param.read_len < 89) {
-        param.kmer_size = 36 * param.read_len / 100;
-    }
-    param.kmer_index_pos = param.read_len - param.kmer_size - param.max_off;
-    param.max_mismatch_count = param.read_len / 6;
-
-    if (param.read_unit_size > 16) {
-        printf("Read length must be less than 512");
-        std::exit(0);
-    }
-    process(param);
+void gpu_malloc_host(void** ptr, size_t size) {
+    cudaHostAlloc(ptr, size, cudaHostAllocPortable);
 }
 
+void gpu_malloc(void** ptr, size_t size, int device_id) {
+    cudaSetDevice(device_id);
+    gpuErrorCheck(cudaMalloc(ptr, size));
+}
+
+void gpu_free_host(void * ptr) {
+    cudaFreeHost(ptr);
+}
+
+void gpu_free(void * ptr, int device_id ) {
+    cudaSetDevice(device_id);
+    cudaFree(ptr);
+}
+
+void gpu_mem_H2D(void * dest, const void * src, size_t size, int device_id) {
+    cudaSetDevice(device_id);
+    cudaMemcpy(dest, src, size, cudaMemcpyHostToDevice);
+}
+
+void gpu_mem_D2H(void * dest, const void * src, size_t size, int device_id) {
+    cudaSetDevice(device_id);
+    cudaMemcpy(dest, src, size, cudaMemcpyDeviceToHost);
+}

@@ -9,6 +9,7 @@ struct Param {
     std::string f1_path;
     std::string f2_path;
     std::string output_name;
+    std::string random_block_prefix_id;
     double block_ratio;
     int flzma2_level;
     int flzma2_thread_num;
@@ -17,6 +18,7 @@ struct Param {
     uint16_t read_len;
     size_t read_unit_size;
     double reads_data_ratio;
+    uint64_t decode_buffer_size;
 
     // error-free match argument
     size_t max_off;

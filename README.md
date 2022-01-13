@@ -9,18 +9,29 @@ The instructions below can be used to create the executable file in the build di
 
 #### Compiling requirement
 CURC should be compiled with GCC version 7.3 or later (supporting C++17 standard) and CUDA Toolkit version 10.1 or later. 
-1. To check the GCC version, please use `gcc --version`. If the GCC version is older than 7.3, you can use the following command to install GCC7.
-- On Ubuntu
+1. To check the GCC version, please use `gcc --version`. If the GCC version is older than 7.3, you can use the anaconda3 to install GCC 7.
+~~- On Ubuntu~~
 ```bash
 sudo add-apt-repository ppa:jonathonf/gcc
 sudo apt-get update
 sudo apt-get install gcc-7 g++-7
 ```
-- On CentOS
+~~- On CentOS~~
 ```bash
 yum install centos-release-scl
 yum install devtoolset-7-gcc-c++
 scl enable devtoolset-7 bash # optional step (if you want to set GCC 7 as default compiler in bash)
+```
+- Anaconda virtual environment
+```bash 
+conda create -n gcc7 
+conda activate gcc7
+conda install gcc_linux-64=7.3.0 gxx_linux-64=7.3.0
+cd <anaconda3_root>/envs/gcc7/bin/  
+ln -s x86_64-conda_cos6-linux-gnu-gcc gcc 
+ln -s x86_64-conda_cos6-linux-gnu-g++ g++ 
+export CC=<anaconda3_root>/envs/gcc7/bin/gcc  
+export CXX=<anaconda3_root>/envs/gcc7/bin/g++ 
 ```
 
 2. To check the CUDA version, please use `cat <cuda_path>/version.txt`(eg `cat /usr/local/cuda/version.txt`) or `nvcc --version`.

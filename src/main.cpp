@@ -2,7 +2,7 @@
 #include <experimental/filesystem>
 #include "Param.hpp"
 #include "constant.hpp"
-#include "compress.cuh"
+#include "preprocess.hpp"
 #include "decompress.hpp"
 #include "../version.h"
 #include "../third_party/cxxopts/cxxopts.hpp"
@@ -20,6 +20,7 @@ int main(int argc, char** argv) {
             ("flzma2_level", "fast-lzma2 compression level [1...10]", cxxopts::value<int>()->default_value("10"))
             ("flzma2_thread_num", "fast-lzma2 compression/decompression thread number", cxxopts::value<int>()->default_value("16"))
             ("preserve_order", "preserve order information", cxxopts::value<bool>()->default_value("false"))
+            ("decode_buffer_size", "size of decompress buffer(MB)", cxxopts::value<uint64_t>()->default_value("1024"))
             ("v,version", "print version")
             ("h,help", "print usage");
     try {
@@ -54,6 +55,14 @@ int main(int argc, char** argv) {
         } else {
             fs::remove_all(param.working_parent_path);
             fs::create_directories(param.working_parent_path);
+        }
+
+        {
+            std::string alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
+            std::random_device rd;
+            std::mt19937_64 generator(rd());
+            std::shuffle(alphabet.begin(), alphabet.end(), generator);
+            param.random_block_prefix_id = alphabet.substr(0, 10);
         }
 
         param.output_name = result["output"].as<std::string>();
@@ -99,6 +108,7 @@ int main(int argc, char** argv) {
                 std::exit(0);
             }
             param.f1_path = input[0];
+            param.decode_buffer_size = result["decode_buffer_size"].as<uint64_t>();
             decompress(param);
         }
     } catch (cxxopts::OptionException& e) {
