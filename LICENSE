@@ -1,6 +1,5 @@
-/**
-Software License:
------------------
+                                        
+                 The MIT License (MIT)
 
 Copyright (c) 2021 Zexuan Zhu<zhuzx@szu.edu.cn>
 
@@ -21,34 +20,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-PgRC:
------------------
-
-The PgRC is an in-memory algorithm for compressing the DNA stream of FASTQ
-datasets, based on the idea of building an approximation of the shortest
-common superstring over high-quality reads. CURC is based on the architecture
-of PgRC and also uses parts of PgRC codes in backend encoding
-(mainly variable-length encoding and pairing data encoding).
-
-The PgRC copyright is as follows:
-
-Copyright (c) 2020 Tomasz M. Kowalski, Szymon Grabowski All Rights Reserved.
-
-See also the PgRC web site:
-  https://github.com/kowallus/PgRC for more information.
-
-*/
-
-#ifndef CURC_FAST_LZMA_HELPER_HPP
-#define CURC_FAST_LZMA_HELPER_HPP
-
-namespace lzma2 {
-
-    void lzma2_compress(const char *infile, const char *outfile, int level, int thread_num);
-
-    void lzma2_decompress(const char *infile, const char *outfile);
-
-} // namespace lzma2
-
-#endif //CURC_FAST_LZMA_HELPER_HPP

@@ -1,5 +1,8 @@
 ## CURC - A CUDA-based reference-free read compressor
 A GPU-accelerated reference-free compressor for high-throughput sequencing reads of FASTQ files.
+
+The current implementation of CURC only supports constant-length reads (<= 512 bases).
+
 ### Installation on Linux
 CURC is designed to run on Linux operating systems with NVIDIA GPUs.
 We have fully tested the program on NVIDIA GPU architectures with compute capability >= 3.7 such as Maxwell, Pascal, Volta, Turing 
@@ -9,21 +12,21 @@ The instructions below can be used to create the executable file in the build di
 
 #### Compiling requirement
 CURC should be compiled with GCC version 7.3 or later (supporting C++17 standard) and CUDA Toolkit version 10.1 or later. 
-1. To check the GCC version, please use `gcc --version`. If the GCC version is older than 7.3, you can use the anaconda3 to install GCC 7.
-~~- On Ubuntu~~
+1. To check the GCC version, please use `gcc --version`. If the GCC version is older than 7.3, you can use the following command to install GCC 7.
+- On Ubuntu
 ```bash
 sudo add-apt-repository ppa:jonathonf/gcc
 sudo apt-get update
 sudo apt-get install gcc-7 g++-7
 ```
-~~- On CentOS~~
+- On CentOS
 ```bash
 yum install centos-release-scl
 yum install devtoolset-7-gcc-c++
 scl enable devtoolset-7 bash # optional step (if you want to set GCC 7 as default compiler in bash)
 ```
-- Anaconda virtual environment
-```bash 
+- On anaconda3 without root privileges
+```bash
 conda create -n gcc7 
 conda activate gcc7
 conda install gcc_linux-64=7.3.0 gxx_linux-64=7.3.0
@@ -82,22 +85,24 @@ CUDA Read Compressor v1.0.0
 Usage:
   curc [OPTION...]
 
-      --working_dir arg        working directory (default: .)
-  -c, --compress               compress file
-  -d, --decompress             decompress archive
-  -i, --input arg              input path (paired-end fastq paths are 
-                               separated by commas)
-  -o, --output arg             output file name (compressed output file use 
-                               .curc as extension, decompressed output file 
-                               use .seq as extension)
-      --block_ratio arg        ratio of block size (default: 1)
-      --flzma2_level arg       fast-lzma2 compression level [1...10] 
-                               (default: 10)
-      --flzma2_thread_num arg  fast-lzma2 compression/decompression thread 
-                               number (default: 16)
-      --preserve_order         preserve order information
-  -v, --version                print version
-  -h, --help                   print usage
+      --working_dir arg         working directory (default: .)
+  -c, --compress                compress file
+  -d, --decompress              decompress archive
+  -i, --input arg               input path (paired-end fastq paths are 
+                                separated by commas)
+  -o, --output arg              output file name (compressed output file 
+                                use .curc as extension, decompressed output 
+                                file use .seq as extension)
+      --block_ratio arg         ratio of block size (default: 1)
+      --flzma2_level arg        fast-lzma2 compression level [1...10] 
+                                (default: 10)
+      --flzma2_thread_num arg   fast-lzma2 compression/decompression thread 
+                                number (default: 16)
+      --preserve_order          preserve order information
+      --decode_buffer_size arg  size of decompress buffer(MB) (default: 
+                                1024)
+  -v, --version                 print version
+  -h, --help                    print usage
 ```
 
 ### GPU warmup and selection
@@ -147,6 +152,13 @@ the block size should be kept small to avoid the out-of-memory issue (around 20 
 ```bash
 ./curc -d -i paired_end_archive.curc -o out   # decompressed output is out_1.seq and out_2.seq
 ```
+
+### Credits
+CURC is based on the architecture of PgRC and also uses parts of PgRC codes in backend encoding.
+
+[Kowalski, S. and Grabowski, S. (2020) PgRC: pseudogenome-based read compressor. Bioinformatics, 36, 2082–2089.](https://academic.oup.com/bioinformatics/article/36/7/2082/5670526)
+
+[Kowalski T, Grabowski SP, Engineering the compression of sequencing reads, BioRxiv2020, https://www.biorxiv.org/content/10.1101/2020.05.01.071720v1.full.](https://www.biorxiv.org/content/10.1101/2020.05.01.071720v1)
 
 ### Sample data
 |   dataset    |  download command | direct download link   |

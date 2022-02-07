@@ -1,6 +1,44 @@
-//
-// Created by junior on 2021/12/14.
-//
+/**
+Software License:
+-----------------
+
+Copyright (c) 2021 Zexuan Zhu<zhuzx@szu.edu.cn>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+PgRC:
+-----------------
+
+The PgRC is an in-memory algorithm for compressing the DNA stream of FASTQ
+datasets, based on the idea of building an approximation of the shortest
+common superstring over high-quality reads. CURC is based on the architecture
+of PgRC and also uses parts of PgRC codes in backend encoding
+(mainly variable-length encoding and pairing data encoding).
+
+The PgRC copyright is as follows:
+
+Copyright (c) 2020 Tomasz M. Kowalski, Szymon Grabowski All Rights Reserved.
+
+See also the PgRC web site:
+  https://github.com/kowallus/PgRC for more information.
+
+*/
 
 #include "preprocess.hpp"
 #include <bits/stdc++.h>
@@ -104,7 +142,7 @@ void process(const Param& param) {
         uint32_t global_reads_id = 0;
         // uint64_t * reads_db_host_ptr = reads_db_host;
 
-        auto preprocess_start = std::chrono::steady_clock::now();
+        // auto preprocess_start = std::chrono::steady_clock::now();
         while(total_read_bytes < fastq_bytes) {
             std::error_code error;
             if (!param.is_paired_end) {
@@ -245,7 +283,7 @@ void process(const Param& param) {
                 for (auto & f : encode_futures) f.get(); // force encode finish
                 encode_futures.clear();
                 // encode_thread_pool.wait_for_tasks();
-                printf("block %d data ready\n", blocks_count);
+                // printf("block %d data ready\n", blocks_count);
                 // block_compress_thread_pool.wait_for_tasks();
                 block_compress_future.emplace_back(std::async(std::launch::async, block_compress,
                                                      reads_db_host,  // + last_reads_count * param.read_unit_size,
@@ -283,7 +321,7 @@ void process(const Param& param) {
             for (auto & f : encode_futures) f.get();
             encode_futures.clear();
             // encode_thread_pool.wait_for_tasks();
-            printf("block %d data ready\n", blocks_count);
+            // printf("block %d data ready\n", blocks_count);
             // block_compress_thread_pool.wait_for_tasks();
             block_compress_future.emplace_back(std::async(std::launch::async, block_compress,
                                                  reads_db_host,  // + last_reads_count * param.read_unit_size,
@@ -305,8 +343,8 @@ void process(const Param& param) {
             reads_count = 0;
             // last_reads_count = reads_count;
         }
-        auto preprocess_end = std::chrono::steady_clock::now();
-        printf("preprocess use time : %lf ms\n", std::chrono::duration<double,std::milli>(preprocess_end - preprocess_start).count());
+        // auto preprocess_end = std::chrono::steady_clock::now();
+        // printf("preprocess use time : %lf ms\n", std::chrono::duration<double,std::milli>(preprocess_end - preprocess_start).count());
 
         printf("reads count : %zu \n", total_reads_count);
         printf("block count : %u \n", blocks_count);
@@ -361,7 +399,7 @@ void compress(Param& param) {
         total_size += line.size();
         std::getline(input_fastq, line);
         total_size += line.size();
-        printf("read length : %d\n", param.read_len);
+        // printf("read length : %d\n", param.read_len);
         total_size += 4;
         param.reads_data_ratio = double(param.read_len + 1) / double(total_size);
     }
@@ -372,7 +410,7 @@ void compress(Param& param) {
         param.kmer_size = 36 * param.read_len / 100;
     }
     param.kmer_index_pos = param.read_len - param.kmer_size - param.max_off;
-    param.max_mismatch_count = param.read_len / 6;
+    param.max_mismatch_count = param.read_len / 5;
 
     if (param.read_unit_size > 16) {
         printf("Read length must be less than 512");
