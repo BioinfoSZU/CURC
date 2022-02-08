@@ -49,7 +49,6 @@ Make sure that CUDA version >= 10.1 before building, and you can check CUDA vers
 Choose one of the following commands to build the source code based on your system environment.
 - If cmake with version 3.19 or later has been installed:
 ```bash
-# if git clone is slow, download source from https://github.com/BioinfoSZU/CURC/archive/refs/heads/master.zip
 git clone https://github.com/BioinfoSZU/CURC.git
 cd CURC 
 mkdir build
@@ -62,7 +61,6 @@ make
 
 - Otherwise:
 ```bash
-# if git clone is slow, download source from https://github.com/BioinfoSZU/CURC/archive/refs/heads/master.zip
 git clone https://github.com/BioinfoSZU/CURC.git
 cd CURC
 mkdir build
