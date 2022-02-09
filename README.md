@@ -151,13 +151,6 @@ the block size should be kept small to avoid the out-of-memory issue (around 20 
 ./curc -d -i paired_end_archive.curc -o out   # decompressed output is out_1.seq and out_2.seq
 ```
 
-### Credits
-CURC is based on the architecture of PgRC and also uses parts of PgRC codes in backend encoding.
-
-[Kowalski, S. and Grabowski, S. (2020) PgRC: pseudogenome-based read compressor. Bioinformatics, 36, 2082–2089.](https://academic.oup.com/bioinformatics/article/36/7/2082/5670526)
-
-[Kowalski T, Grabowski SP, Engineering the compression of sequencing reads, BioRxiv2020, https://www.biorxiv.org/content/10.1101/2020.05.01.071720v1.full.](https://www.biorxiv.org/content/10.1101/2020.05.01.071720v1)
-
 ### Sample data
 |   dataset    |  download command | direct download link   |
 |   :----:     |      :----:       |        :----:          |
@@ -165,3 +158,10 @@ CURC is based on the architecture of PgRC and also uses parts of PgRC codes in b
 | SRR445724    |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR445/SRR445724/SRR445724.fastq.gz`   | [SRR445724.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR445/SRR445724/SRR445724.fastq.gz)   |
 | SRR065390_1  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_1.fastq.gz` | [SRR065390_1.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_1.fastq.gz) |
 | SRR065390_2  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_2.fastq.gz` | [SRR065390_2.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_2.fastq.gz) |
+
+### Credits
+CURC is based on the architecture of PgRC and also uses parts of PgRC codes in backend encoding.
+
+[Kowalski, S. and Grabowski, S. (2020) PgRC: pseudogenome-based read compressor. Bioinformatics, 36, 2082–2089.](https://academic.oup.com/bioinformatics/article/36/7/2082/5670526)
+
+[Kowalski T, Grabowski SP, Engineering the compression of sequencing reads, BioRxiv2020, https://www.biorxiv.org/content/10.1101/2020.05.01.071720v1.full.](https://www.biorxiv.org/content/10.1101/2020.05.01.071720v1)
