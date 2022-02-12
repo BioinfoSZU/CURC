@@ -1007,21 +1007,21 @@ void decompress_block(std::ifstream& input, std::ofstream & o1, std::ofstream & 
 
 void decompress(const Param& param) {
     // 确保至少存在一个设备可以解压
-    int device_count;
-    if (cudaGetDeviceCount(&device_count) != cudaSuccess) {
-        printf("cudaGetDeviceCount Error\n");
-        std::exit(0);
-    }
-    if (device_count < 1) {
-        printf("Can't detect gpu device\n");
-        std::exit(0);
-    }
-
-    // 解压默认只在第一个设备执行
-    auto gpu_context_init_future = std::async(std::launch::async, []{
-        cudaSetDevice(0);
-        cudaFree(nullptr);
-    });
+//    int device_count;
+//    if (cudaGetDeviceCount(&device_count) != cudaSuccess) {
+//        printf("cudaGetDeviceCount Error\n");
+//        std::exit(0);
+//    }
+//    if (device_count < 1) {
+//        printf("Can't detect gpu device\n");
+//        std::exit(0);
+//    }
+//
+//    // 解压默认只在第一个设备执行
+//    auto gpu_context_init_future = std::async(std::launch::async, []{
+//        cudaSetDevice(0);
+//        cudaFree(nullptr);
+//    });
 
     std::ifstream input(param.f1_path);
     std::ofstream o1, o2;

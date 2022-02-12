@@ -64,26 +64,6 @@ while(!finish) {                                                 \
     }                                                            \
 }                                                                \
 
-//#define LOCK_START                                               \
-//finish = false;                                                  \
-//while(!finish) {                                                 \
-//    if (gpu_lock[device_id].try_lock()) {                        \
-//
-//#define LOCK_END                                                 \
-//        gpu_lock[device_id].unlock();                            \
-//        finish = true;                                           \
-//        break;                                                   \
-//    }                                                            \
-//}                                                                \
-
-//std::mutex device_id_mutex;
-//int global_device_id = 0;
-//void query_idle_gpu(int device_count, int & device_id) {
-//    {
-//        const std::lock_guard<std::mutex> lock(device_id_mutex);
-//        device_id = global_device_id++ % device_count;
-//    }
-//}
 
 struct AlignmentRecord {
     uint32_t read_id;
@@ -96,7 +76,6 @@ struct AlignmentRecord {
        : read_id(read_id), is_contain_N(is_contain_N), strand_id(strand_id), pos(pos) {}
 };
 
-// template<size_t read_unit_size>
 struct RefRecord {
     std::vector<AlignmentRecord> record;
     std::string ref_string;
@@ -286,7 +265,6 @@ struct RefRecord {
     }
 };
 
-// template<size_t read_unit_size>
 struct ReadMapper {
 private:
     int device_id;
@@ -720,7 +698,7 @@ public:
     void init(const uint64_t * binary_ref, size_t binary_ref_size) {
         cudaSetDevice(device_id);
         size_t index_count = (ref_len - kmer_size + 1 + src_step - 1) / src_step;
-        if (index_count > (1ULL << 30ULL)) { // ref_len require <= 5.3 Gbp, this is generally true under the block compression strategy
+        if (index_count > (1ULL << 30ULL)) { // ref_len <= 5.3 Gbp
             printf("RefMatcher hash_size is limit to 4GB\n");
             std::exit(-1);
         }
@@ -813,7 +791,7 @@ public:
                                         compare_len--;
                                     }
                                     if (compare_len == 0) {
-                                        unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1); // TODO 64bit atomicAdd 貌似只在计算力 >= 6.x 的设备上支持
+                                        unsigned long long matches_idx = atomicAdd(matches_size_atomic, 1);
                                         /// assert(matches_idx < match_result_capacity)
                                         if (matches_idx < match_result_capacity)
                                             matches[matches_idx] = MatchResult(p2 + 1, right - p1 - 1, p1 + 1);
@@ -874,7 +852,6 @@ public:
                          });
     }
 
-    // template<size_t read_unit_size>
     void match(RefRecord * dest_ref, std::string& MapOff, std::string& MapLen, bool dest_contain_N, bool dest_is_ref) {
         cudaSetDevice(device_id);
         if (dest_ref->ref_string.empty()) {
@@ -891,7 +868,6 @@ public:
         } else {
             match_result_capacity = dest_index_count * unmap_ref_match_result_ratio;
         }
-        // printf("match result bytes : %zu\n", match_result_capacity * sizeof(MatchResult));
         gpuErrorCheck(cudaMalloc((void**) &matches, match_result_capacity * sizeof(MatchResult)));
         cudaMalloc((void**) &matches_size_atomic, sizeof(unsigned long long));
         cudaMemset(matches_size_atomic, 0, sizeof(unsigned long long));
@@ -995,7 +971,7 @@ public:
             uint64_t length = match.posDest - pos;
             std::memmove(dest_ptr + npos, dest_ptr + pos, length);
             npos += length;
-            dest_ref->ref_string[npos++] = '%'; // mark
+            dest_ref->ref_string[npos++] = '%';
             if (is_ref_len_std) {
                 PgSAHelpers::writeValue<uint32_t>(MapOffDest, match.posSrc);
             } else {
@@ -1024,7 +1000,6 @@ public:
 //    }
 };
 
-// template<size_t read_unit_size>
 void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * suffix_reads_id, uint32_t cnt,
                     uint32_t * next, uint32_t * prev, uint16_t * offset, const Param& param, int device_id, const cudaStream_t & stream) {
     cudaSetDevice(device_id);
@@ -1198,7 +1173,6 @@ void full_match_gpu(uint64_t * reads_db, uint32_t * prefix_reads_id, uint32_t * 
     }
 }
 
-// template<size_t read_unit_size>
 void full_match_cpu(const char* N_reads_db_host, uint32_t * unmapping_N_reads_id,
                     uint32_t unmapping_N_reads_count, size_t N_reads_count,
                     const Param& param, RefRecord * ref_ptr) {
@@ -1372,7 +1346,6 @@ void full_match_cpu(const char* N_reads_db_host, uint32_t * unmapping_N_reads_id
     ref_ptr->assembly(N_reads_db_host, unmapping_N_reads_id, unmapping_N_reads_count, next.data(), prev.data(), offset.data(), N_reads_count, param.read_len);
 }
 
-// template<size_t read_unit_size>
 void block_compress(uint64_t * reads_db_host,
                     std::vector<uint32_t> reads_id,
                     std::vector<char> N_reads_db_host,
@@ -1402,7 +1375,6 @@ void block_compress(uint64_t * reads_db_host,
     uint32_t * ref_reads_id_host, * unmatch_reads_id_host;
     uint32_t ref_reads_count, unmatch_reads_count;
 
-    // auto prefix_suffix_match_begin = std::chrono::steady_clock::now();
     LOCK_START
     {
         cudaSetDevice(device_id);
@@ -1634,19 +1606,13 @@ void block_compress(uint64_t * reads_db_host,
         cudaStreamDestroy(stream);
     }
     LOCK_END
-    // auto prefix_suffix_match_end = std::chrono::steady_clock::now();
-    // printf("block %d prefix suffix match use %lf ms\n", block_id, std::chrono::duration<double,std::milli>(prefix_suffix_match_end-prefix_suffix_match_begin).count());
 
     cudaHostUnregister(reads_id.data());
     reads_id.clear();
     reads_id.shrink_to_fit();
 
     auto ref = std::make_unique<RefRecord>();
-    // auto assembly_start = std::chrono::steady_clock::now();
     ref->assembly(reads_db_host, ref_reads_id_host, ref_reads_count, next_host, prev_host, offset_host, reads_count, param.read_len, param.read_unit_size);
-    // auto assembly_end = std::chrono::steady_clock::now();
-    // printf("block %d assembly use time : %lf ms\n", block_id, std::chrono::duration<double,std::milli>(assembly_end - assembly_start).count());
-    // printf("block %d ref_reads_count : %u\n", block_id, ref_reads_count);
 
     ref->allocate_binary_ref();
     ref->compute_binary_ref();
@@ -1659,7 +1625,6 @@ void block_compress(uint64_t * reads_db_host,
     uint32_t unmapping_reads_count, unmapping_N_reads_count;
     std::vector<AlignmentRecord> map_record;
     std::vector<uint8_t> map_mis_cnt;
-    // auto read_mapping_start = std::chrono::steady_clock::now();
     LOCK_START
     {
         cudaSetDevice(device_id);
@@ -1669,15 +1634,10 @@ void block_compress(uint64_t * reads_db_host,
         read_mapper.init(reads_db_host, N_reads_db_host.data(), unmatch_reads_id_host, ref->binary_ref_string, ref->binary_ref_size);
         read_mapper.template index_and_mapping<false>(Param::k1, Param::ref_index_step1, Param::bucket_limit, Param::read_index_step1, Param::target_mismatch_count1);
         read_mapper.template index_and_mapping<true>(Param::k1, Param::ref_index_step1, Param::bucket_limit, Param::read_index_step1, Param::target_mismatch_count1);
-        // read_mapper.template index_and_mapping<false>(Param::k2, Param::ref_index_step2, Param::bucket_limit, Param::read_index_step2, Param::target_mismatch_count2);
-        // read_mapper.template index_and_mapping<true>(Param::k2, Param::ref_index_step2, Param::bucket_limit, Param::read_index_step2, Param::target_mismatch_count2);
         read_mapper.get_result(unmatch_reads_id_host, unmapping_reads_count, unmapping_N_reads_id, unmapping_N_reads_count, map_record, map_mis_cnt);
         cudaStreamDestroy(stream);
     }
     LOCK_END
-    // auto read_mapping_end = std::chrono::steady_clock::now();
-    // printf("block %d read mapping use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(read_mapping_end - read_mapping_start).count());
-    // printf("block %d read mapping reads count : %zu; unmapping_reads_count : %u; unmapping_N_reads_count : %u\n", block_id, unmatch_reads_count + N_reads_id.size(), unmapping_reads_count, unmapping_N_reads_count);
 
     if (!N_reads_db_host.empty()) {
         cudaHostUnregister(N_reads_db_host.data());
@@ -1688,7 +1648,6 @@ void block_compress(uint64_t * reads_db_host,
 
     auto unmapping_ref_construct = std::async(std::launch::async, [&] {
         if (unmapping_reads_count == 0) return;
-        // auto unmapping_ref_start = std::chrono::steady_clock::now();
         uint64_t * reads_db_buffer;
         uint32_t * next_host, * prev_host;
         uint16_t * offset_host;
@@ -1760,17 +1719,12 @@ void block_compress(uint64_t * reads_db_host,
             unmapping_ref->record[i].read_id = unmatch_reads_id_host[id];
         }
         cudaFreeHost(unmatch_reads_id_host);
-        // auto unmapping_ref_end = std::chrono::steady_clock::now();
-        // printf("block %d unmapping ref construct use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(unmapping_ref_end - unmapping_ref_start).count());
     });
 
     auto unmapping_N_ref_construct = std::async(std::launch::async, [&] {
         if (unmapping_N_reads_count == 0) return ;
-        // auto unmapping_N_ref_start = std::chrono::steady_clock::now();
         full_match_cpu(N_reads_db_host.data(), unmapping_N_reads_id, unmapping_N_reads_count, N_reads_id.size(), param, unmapping_N_ref.get());
         cudaFreeHost(unmapping_N_reads_id);
-        // auto unmapping_N_ref_end = std::chrono::steady_clock::now();
-        // printf("block %d unmapping N ref construct use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(unmapping_N_ref_end - unmapping_N_ref_start).count());
     });
 
     std::vector<uint64_t> id_to_pos;
@@ -1801,7 +1755,6 @@ void block_compress(uint64_t * reads_db_host,
             });
         }
 
-        // uint64_t last_pos = 0;
         size_t mismatch_base_context[256][256] = {0};
         std::string mismatch_base_context_stream;
         std::string mismatch_base_stream;
@@ -1833,13 +1786,7 @@ void block_compress(uint64_t * reads_db_host,
             else if (i == 2) mismatch_offset_stream[i].resize(3 * mismatch_count_stat[i]);
             else             mismatch_offset_stream[i].resize((i + 2) * mismatch_count_stat[i]);
         }
-//        printf("block %d mismatch_count_stat {\n", block_id);
-//        for (size_t i = 1; i <= param.max_mismatch_count; ++i) {
-//            printf("\t%zu\t%zu\n", i, mismatch_count_stat[i]);
-//        }
-//        printf("}\n");
 
-        // auto stream_generate_start = std::chrono::steady_clock::now();
 #pragma omp parallel for
         for (size_t i = 0; i < record.size(); ++i) {
             const uint32_t read_id = record[i].read_id;
@@ -1862,9 +1809,7 @@ void block_compress(uint64_t * reads_db_host,
                     }
                 }
                 reads_off_stream[i] = (i == 0) ? 0 : (pos - record[i - 1].pos);
-                // last_pos = pos;
             }
-            // if (strand_id == 0) strand_id_stream += "0"; else strand_id_stream += "1";
             strand_id_stream[i] = char('0' + strand_id);
 
             if (mismatch_count > 0) {
@@ -1881,10 +1826,6 @@ void block_compress(uint64_t * reads_db_host,
                             mismatch_base_context_stream [idx] = ref->ref_string[pos + p];
                             mismatch_base_stream [idx] = read_base;
                             idx++;
-//                            #pragma omp critical
-//                            {
-//                                mismatch_base_context[ref->ref_string[pos + p]][read_base]++;
-//                            }
                             mismatch_offset.push_back(p);
                         }
                     }
@@ -1898,10 +1839,6 @@ void block_compress(uint64_t * reads_db_host,
                             mismatch_base_context_stream [idx] = ref->ref_string[pos + p];
                             mismatch_base_stream [idx] = read_base;
                             idx++;
-//                            #pragma omp critical
-//                            {
-//                                mismatch_base_context[ref->ref_string[pos + p]][read_base]++;
-//                            }
                             mismatch_offset.push_back(p);
                         }
                     }
@@ -1952,10 +1889,7 @@ void block_compress(uint64_t * reads_db_host,
         record.clear(); record.shrink_to_fit();
         mismatch_base_idx.clear(); mismatch_base_idx.shrink_to_fit();
         mismatch_offset_idx.clear(); mismatch_offset_idx.shrink_to_fit();
-        // auto stream_generate_end = std::chrono::steady_clock::now();
-        // printf("block %d stream generate use time : %lf ms\n", block_id, std::chrono::duration<double, std::milli>(stream_generate_end - stream_generate_start).count());
 
-        // auto other_stream_compress_start = std::chrono::steady_clock::now();
         for (size_t i = 0; i < mismatch_base_stream.size(); ++i) {
             mismatch_base_context[mismatch_base_context_stream[i]][mismatch_base_stream[i]]++;
         }
@@ -2025,13 +1959,11 @@ void block_compress(uint64_t * reads_db_host,
                 mismatch_offset_compress<65536>(mismatch_offset_stream[i], i, working_path / ("mismatch_off_" + std::to_string(i)));
             }
         }
-        // auto other_stream_compress_end = std::chrono::steady_clock::now();
-        // printf("block %d other stream compress use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(other_stream_compress_end - other_stream_compress_start).count());
     }
 
     unmapping_ref_construct.get();
     unmapping_N_ref_construct.get();
-    cudaFreeHost(reads_db_host); // After stream generation, free reads_db_host
+    cudaFreeHost(reads_db_host);
 
     if (!param.is_preserve_order) {
         std::vector<uint16_t> reads_off_stream; // may be empty
@@ -2088,7 +2020,6 @@ void block_compress(uint64_t * reads_db_host,
         output_file.write(reinterpret_cast<const char*>(&isJoinRefLengthStd), sizeof(uint8_t));
     }
     auto id_to_pos_compress_future = std::async(std::launch::async, [&] {
-        // auto id_to_pos_compress_start = std::chrono::steady_clock::now();
         if (param.is_preserve_order) {
             if (!param.is_paired_end) {
                 std::ofstream id_pos_file(working_path / "id_pos.bin");
@@ -2110,21 +2041,15 @@ void block_compress(uint64_t * reads_db_host,
             id_to_pos.clear();
             id_to_pos.shrink_to_fit();
         }
-        // auto id_to_pos_compress_end = std::chrono::steady_clock::now();
-        // printf("block %d id_to_pos compress use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(id_to_pos_compress_end - id_to_pos_compress_start).count());
     });
 
     {
-//        printf("block %d Before RefMatcher: ref_length %zu; unmapping_ref_length %zu; unmapping_N_ref_length %zu; sum %zu\n",
-//               block_id, ref->ref_string.size(), unmapping_ref->ref_string.size(), unmapping_N_ref->ref_string.size(),
-//               ref->ref_string.size() + unmapping_ref->ref_string.size() + unmapping_N_ref->ref_string.size());
         uint8_t isRefLengthStd = ref->ref_string.size() <= UINT32_MAX;
         output_file.write(reinterpret_cast<const char*>(&isRefLengthStd), sizeof(uint8_t));
 
         std::string unmapRefMapOff, unmapRefMapLen;
         std::string unmapNRefMapOff, unmapNRefMapLen;
         std::string refMapOff, refMapLen;
-        // auto ref_match_start = std::chrono::steady_clock::now();
         LOCK_START
         {
             cudaSetDevice(device_id);
@@ -2135,22 +2060,13 @@ void block_compress(uint64_t * reads_db_host,
             if (!unmapping_ref->ref_string.empty()) {
                 matcher.match(unmapping_ref.get(), unmapRefMapOff, unmapRefMapLen, false, false);
             }
-            // printf("unmapping_ref match finish\n");
             if (!unmapping_N_ref->ref_string.empty()) {
                 matcher.match(unmapping_N_ref.get(), unmapNRefMapOff, unmapNRefMapLen, true, false);
             }
-            // printf("unmapping_N_ref match finish\n");
             matcher.match(ref.get(), refMapOff, refMapLen, false, true);
-            // printf("ref match finish\n");
             cudaStreamDestroy(stream);
-            // matcher.finish_match();
         }
         LOCK_END
-        // auto ref_match_end = std::chrono::steady_clock::now();
-        // printf("block %d ref match use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(ref_match_end - ref_match_start).count());
-//        printf("block %d After RefMatcher: ref_length %zu; unmapping_ref_length %zu; unmapping_N_ref_length %zu; sum %zu\n",
-//               block_id, ref->ref_string.size(), unmapping_ref->ref_string.size(), unmapping_N_ref->ref_string.size(),
-//               ref->ref_string.size() + unmapping_ref->ref_string.size() + unmapping_N_ref->ref_string.size());
 
         double estimated_ref_offset_ratio = simpleUintCompressionEstimate(ref->ref_string.size(), isRefLengthStd ? UINT32_MAX : UINT64_MAX);
         const int ref_offset_data_period_code = isRefLengthStd ? 2 : 3;
@@ -2167,7 +2083,6 @@ void block_compress(uint64_t * reads_db_host,
     }
 
     {
-        // auto ref_compress_start = std::chrono::steady_clock::now();
         uint64_t ref_size = ref->ref_string.size();
         uint64_t unmapping_ref_size = unmapping_ref->ref_string.size();
         uint64_t unmapping_N_ref_size = unmapping_N_ref->ref_string.size();
@@ -2192,8 +2107,6 @@ void block_compress(uint64_t * reads_db_host,
         ref->ref_string.shrink_to_fit();
 
         lzma2::lzma2_compress((working_path / "ref_var_len_encode.bin").c_str(), (working_path / "ref.lzma2").c_str(), param.flzma2_level, param.flzma2_thread_num);
-        // auto ref_compress_end = std::chrono::steady_clock::now();
-        // printf("block %d ref compress use %lf ms\n", block_id, std::chrono::duration<double, std::milli>(ref_compress_end - ref_compress_start).count());
     }
 
     auto read_file_and_output = [&](const fs::path &filename) {
