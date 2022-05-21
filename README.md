@@ -159,6 +159,9 @@ the block size should be kept small to avoid the out-of-memory issue (around 20 
 | SRR065390_1  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_1.fastq.gz` | [SRR065390_1.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_1.fastq.gz) |
 | SRR065390_2  |`wget https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_2.fastq.gz` | [SRR065390_2.fastq.gz](https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR065/SRR065390/SRR065390_2.fastq.gz) |
 
+### Publications
+[Xie, Shaohui et al. “CURC: A CUDA-based reference-free read compressor.” Bioinformatics (Oxford, England), btac333. 17 May. 2022, doi:10.1093/bioinformatics/btac333](https://academic.oup.com/bioinformatics/advance-article-abstract/doi/10.1093/bioinformatics/btac333/6586792)
+
 ### Credits
 CURC is based on the architecture of PgRC and also uses parts of PgRC codes in backend encoding.
 
